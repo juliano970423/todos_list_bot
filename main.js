@@ -4,14 +4,12 @@ import * as chrono from "chrono-node";
 export default {
   async fetch(request, env, ctx) {
     const bot = new Bot(env.BOT_TOKEN);
-    bot.route = "/";
 
-    // 指令：開始
+    // 設定所有 bot 指令和處理邏輯
     bot.command("start", (ctx) => {
       return ctx.reply("🤖 Todo 提醒機器人 (npm 版)\n\n直接輸入任務加時間，例如：\n• 「買牛奶 明天下午 2 點」\n• 「開會 09:00」");
     });
 
-    // 指令：查看清單
     bot.command("list", async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
@@ -37,7 +35,6 @@ export default {
       }
     });
 
-    // 處理刪除按鈕
     bot.on("callback_query:data", async (ctx) => {
       try {
         if (ctx.callbackQuery.data.startsWith("del_")) {
@@ -52,7 +49,6 @@ export default {
       }
     });
 
-    // 核心邏輯：處理文字輸入
     bot.on("message:text", async (ctx) => {
       try {
         const text = ctx.message.text;
@@ -90,9 +86,19 @@ export default {
       }
     });
 
-    // 關鍵修正：使用 bot.init() + bot.fetch()
-    await bot.init();
-    return bot.fetch(request);
+    // ✅ 關鍵修正：使用 handleUpdate 來處理請求
+    if (request.method === "POST") {
+      try {
+        const update = await request.json();
+        await bot.handleUpdate(update);
+        return new Response(null, { status: 200 });
+      } catch (error) {
+        console.error('Handle update error:', error);
+        return new Response('Internal Server Error', { status: 500 });
+      }
+    } else {
+      return new Response('Method Not Allowed', { status: 405 });
+    }
   },
 
   async scheduled(event, env, ctx) {
