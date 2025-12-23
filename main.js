@@ -2,13 +2,16 @@ import { Bot, InlineKeyboard } from "grammy";
 import * as chrono from "chrono-node";
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const bot = new Bot(env.BOT_TOKEN);
+    bot.route = "/";
 
+    // 指令：開始
     bot.command("start", (ctx) => {
       return ctx.reply("🤖 Todo 提醒機器人 (npm 版)\n\n直接輸入任務加時間，例如：\n• 「買牛奶 明天下午 2 點」\n• 「開會 09:00」");
     });
 
+    // 指令：查看清單
     bot.command("list", async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
@@ -34,6 +37,7 @@ export default {
       }
     });
 
+    // 處理刪除按鈕
     bot.on("callback_query:data", async (ctx) => {
       try {
         if (ctx.callbackQuery.data.startsWith("del_")) {
@@ -48,6 +52,7 @@ export default {
       }
     });
 
+    // 核心邏輯：處理文字輸入
     bot.on("message:text", async (ctx) => {
       try {
         const text = ctx.message.text;
@@ -80,14 +85,14 @@ export default {
 
         await ctx.reply(`✅ 已預約提醒：\n📌 內容：${task}\n⏰ 時間：${displayTime}`);
       } catch (error) {
-        console.error('message error:', error);
+        console.error('message processing error:', error);
         return ctx.reply('❌ 處理訊息時發生錯誤');
       }
     });
 
-    // ✅ 關鍵修正：使用 webhookCallback
-    const { webhookCallback } = bot;
-    return webhookCallback(request);
+    // 關鍵修正：使用 bot.init() + bot.fetch()
+    await bot.init();
+    return bot.fetch(request);
   },
 
   async scheduled(event, env, ctx) {
@@ -105,12 +110,12 @@ export default {
             await bot.api.sendMessage(todo.user_id, `⏰ 時間到囉！\n任務內容：${todo.task}`);
             await env.DB.prepare("UPDATE todos SET status = 1 WHERE id = ?").bind(todo.id).run();
           } catch (e) {
-            console.error('send reminder error:', e);
+            console.error('reminder send error:', e);
           }
         }
       }
     } catch (error) {
-      console.error('scheduled error:', error);
+      console.error('scheduled task error:', error);
     }
   }
 };
