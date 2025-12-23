@@ -37,10 +37,28 @@ export default {
       const waitMsg = await ctx.reply("🤖 正在思考規則...");
       const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
       
-      const prompt = `Time:${now.toISOString()}. Input:"${text}". 
-      Return JSON: {"task":"string","time":"ISO8601+08:00","rule":"daily|weekly:1,2|monthly:5|yearly:12-25|none"}`;
+      const prompt = `
+# Role: 任務解析專家
+# Context: 
+- 現在台灣時間: ${now.toISOString()}
+- 使用者輸入: "${text}"
 
-      try {
+# Task:
+解析使用者輸入。任務可能具備「特定時間」、「週期規則」或「完全沒時間」。
+
+# Field Definitions:
+1. "task": 任務內容。**務必去時間化**（移除如"9點"、"每天"、"提醒我"等詞）。
+2. "time": 下次執行的 ISO8601 時間（含 +08:00）。
+   - 若使用者「沒指定時間」（如：買雞蛋），回傳 null。
+   - 若使用者有指定時間（如：今天晚上9點、1月1日），請計算出該時間點。
+3. "rule": 
+   - 單次任務（包括 10 分鐘後、今天 9 點、某月某日一次性）：回傳 "none"。
+   - 週期任務（每、重複）：回傳 "daily"、"weekly:1,3,5"、"monthly:1" 或 "yearly:05-20"。
+
+# Output Format (JSON ONLY):
+{"task":"string", "time":"string or null", "rule":"none|daily|weekly|monthly|yearly"}
+`;
+    try {
         const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
           method: 'POST',
           headers: { 
