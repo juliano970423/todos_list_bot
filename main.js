@@ -43,7 +43,10 @@ export default {
       try {
         const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+             'Authorization': `Bearer ${env.POLLINATIONS_API_KEY}`,
+ 							'Content-Type': 'application/json'
+          },
           body: JSON.stringify({ model: "nova-micro", messages: [{ role: "user", content: prompt }] })
         });
         const data = await res.json();
