@@ -5,7 +5,7 @@
   "main": "index.js",
   "dependencies": {
     "abort-controller": "^3.0.0",
-    "chrono-node": "*",
+    "chrono-node": "^2.9.0",
     "debug": "^4.4.3",
     "event-target-shim": "^5.0.1",
     "grammy": "^1.38.4",
