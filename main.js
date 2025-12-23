@@ -86,9 +86,13 @@ export default {
       }
     });
 
-    // ✅ 關鍵修正：使用 handleUpdate 來處理請求
+    // ✅ 關鍵修正：先初始化 bot，再處理更新
     if (request.method === "POST") {
       try {
+        // 先初始化 bot
+        await bot.init();
+        
+        // 然後處理更新
         const update = await request.json();
         await bot.handleUpdate(update);
         return new Response(null, { status: 200 });
@@ -97,13 +101,16 @@ export default {
         return new Response('Internal Server Error', { status: 500 });
       }
     } else {
-      return new Response('Method Not Allowed', { status: 405 });
+      return new Response('OK', { status: 200 });
     }
   },
 
   async scheduled(event, env, ctx) {
     try {
+      // ✅ 定時任務也需要初始化 bot
       const bot = new Bot(env.BOT_TOKEN);
+      await bot.init();
+      
       const now = Math.floor(Date.now() / 1000);
 
       const { results } = await env.DB.prepare(
