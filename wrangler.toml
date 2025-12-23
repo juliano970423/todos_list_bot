@@ -1,0 +1,13 @@
+name = "todo-bot"
+main = "main.js"
+compatibility_date = "2024-01-01"
+compatibility_flags = [ "nodejs_compat" ]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "todo"
+database_id = "fb7570f1-e394-49d1-89d2-1d90bf938c4c"
+
+[triggers]
+# 修改這裡：從 * * * * * 改成 */2 * * * *
+crons = ["*/2 * * * *"]
