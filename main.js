@@ -3,8 +3,171 @@ import * as chrono from "chrono-node";
 
 const TAIPEI_OFFSET = 8 * 60;
 
+// --- 資料庫初始化 (部署時自動建立表) ---
+async function initDatabase(env) {
+  try {
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS todos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        task TEXT NOT NULL,
+        remind_at INTEGER NOT NULL,
+        cron_rule TEXT,
+        all_day INTEGER DEFAULT 0,
+        status INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+  } catch (e) {
+    console.error("資料庫初始化失敗:", e.message);
+  }
+}
+
+// --- AI 提示詞模板 (英文指令 + 完整輸入輸出範例) ---
+function getTaskPrompt(text, now) {
+  return `
+# ROLE: TASK EXTRACTOR (STRICT JSON OUTPUT ONLY)
+# CONTEXT: Current time is ${now.toISOString()} (Taipei Time, UTC+8)
+# CRITICAL RULES (MUST FOLLOW EXACTLY):
+1. OUTPUT MUST BE VALID JSON WITH NO EXTRA TEXT
+2. "task" field: Extract ONLY the core task content. Remove all time/rule words like "remind me", "every", "on Jan 1st". 
+3. "time" field: ISO 8601 timestamp in Taipei time (UTC+8) OR null. 
+4. "rule" field: Recurrence rule options (see examples below)
+5. "isAllDay": true/false. Set true for tasks without specific time.
+
+# PROCESSING STEPS (EXECUTE IN ORDER):
+1. Extract pure task content (remove all time/rule phrases)
+2. Parse time to Taipei timezone ISO 8601 format
+3. Determine recurrence rule based on input
+4. Validate JSON structure before output
+
+# USER INPUT:
+"${text}"
+
+# COMPLETE EXAMPLES (INPUT -> OUTPUT MAPPING):
+// Example 1:
+// Input: "每週一到週五晚上8點58分提醒我拿手機"
+{
+  "task": "拿手機",
+  "time": "${new Date(now).setHours(20,58,0,0).toISOString().replace('Z', '+08:00')}",
+  "rule": "weekly:1,2,3,4,5",
+  "isAllDay": false
+}
+
+// Example 2:
+// Input: "提醒我1月1號玩arcaea領記憶源點"
+{
+  "task": "玩arcaea領記憶源點",
+  "time": "${new Date(now.getFullYear() + 1, 0, 1).toISOString().replace('Z', '+08:00')}",
+  "rule": "yearly:01-01",
+  "isAllDay": true
+}
+
+// Example 3:
+// Input: "每週一到週五晚上9點提醒我拿手機"
+{
+  "task": "拿手機",
+  "time": "${new Date(now).setHours(21,0,0,0).toISOString().replace('Z', '+08:00')}",
+  "rule": "weekly:1,2,3,4,5",
+  "isAllDay": false
+}
+
+// Example 4:
+// Input: "明天早上8點開會"
+{
+  "task": "開會",
+  "time": "${new Date(now).setDate(now.getDate() + 1); now.setHours(8,0,0,0); now.toISOString().replace('Z', '+08:00')}",
+  "rule": "none",
+  "isAllDay": false
+}
+
+// Example 5:
+// Input: "每天記帳"
+{
+  "task": "記帳",
+  "time": null,
+  "rule": "daily",
+  "isAllDay": true
+}
+
+# FINAL OUTPUT (JSON ONLY, NO OTHER TEXT):
+`;
+}
+
+function getQueryPrompt(queryText, now) {
+  return `
+# ROLE: TIME RANGE EXTRACTOR (STRICT JSON OUTPUT ONLY)
+# CONTEXT: Current time is ${now.toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })} (Taipei Time)
+# RULES:
+- "start" and "end": Unix timestamps in seconds
+- "label": Concise Chinese description for user display
+
+# USER QUERY:
+"${queryText}"
+
+# COMPLETE EXAMPLES (INPUT -> OUTPUT MAPPING):
+// Example 1:
+// Input: "今天"
+{"start": ${Math.floor(new Date().setHours(0,0,0,0)/1000)}, "end": ${Math.floor(new Date().setHours(23,59,59,999)/1000)}, "label": "今天"}
+
+// Example 2:
+// Input: "昨天"
+{"start": ${Math.floor(new Date().setDate(new Date().getDate() - 1); new Date().setHours(0,0,0,0); new Date().getTime()/1000)}, "end": ${Math.floor(new Date().setHours(23,59,59,999)/1000)}, "label": "昨天"}
+
+// Example 3:
+// Input: "本週"
+{"start": ${Math.floor(new Date().setDate(new Date().getDate() - new Date().getDay() + 1); new Date().setHours(0,0,0,0); new Date().getTime()/1000)}, "end": ${Math.floor(new Date().setDate(new Date().getDate() - new Date().getDay() + 7); new Date().setHours(23,59,59,999); new Date().getTime()/1000)}, "label": "本週"}
+
+# FINAL OUTPUT (JSON ONLY):
+`;
+}
+
+// --- 強健的 AI 回應解析器 ---
+async function parseAIResponse(content) {
+  try {
+    // 清理並提取 JSON
+    let cleanContent = content
+      .replace(/```json|```/g, '')
+      .replace(/^[^{]*|[^}]*$/g, '')
+      .trim();
+    
+    // 處理常見的 AI 格式問題
+    if (!cleanContent.startsWith('{')) {
+      const firstBrace = cleanContent.indexOf('{');
+      if (firstBrace !== -1) cleanContent = cleanContent.substring(firstBrace);
+    }
+    if (!cleanContent.endsWith('}')) {
+      const lastBrace = cleanContent.lastIndexOf('}');
+      if (lastBrace !== -1) cleanContent = cleanContent.substring(0, lastBrace + 1);
+    }
+
+    // 解析並驗證
+    const json = JSON.parse(cleanContent);
+    
+    // 強制字段要求
+    if (!json.task || typeof json.task !== 'string') {
+      json.task = "未命名任務";
+    }
+    if (json.time === "Invalid Date" || json.time === "null" || json.time === "" || !json.time) {
+      json.time = null;
+    }
+    if (!json.rule || typeof json.rule !== 'string') {
+      json.rule = "none";
+    }
+    if (json.isAllDay === undefined) {
+      json.isAllDay = false;
+    }
+    
+    return json;
+  } catch (e) {
+    console.error("AI 回應解析失敗:", content);
+    throw new Error(`無效的 AI 回應格式: ${e.message}`);
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
+    await initDatabase(env);
     const bot = new Bot(env.BOT_TOKEN);
 
     // --- 1. 訊息解析與分流 ---
@@ -14,7 +177,7 @@ export default {
       if (text.startsWith('/list')) return await handleQuery(ctx, env, text, "list");
       if (text.startsWith('/history')) return await handleQuery(ctx, env, text, "history");
 
-      const hasComplex = /每|到|號|月|年|週/.test(text);
+      const hasComplex = /每|到|號|月|年|週|every|to|day|month|year|week/i.test(text);
       const local = parseTimeLocally(text);
 
       if (hasComplex || !local) return await processTaskWithAI(ctx, env, text);
@@ -28,23 +191,19 @@ export default {
       });
     });
 
-    // --- 2. AI 處理：新增任務 (支援「本月每天」等複雜邏輯) ---
+    // --- 2. AI 處理：新增任務 ---
     async function processTaskWithAI(ctx, env, text) {
       const waitMsg = await ctx.reply("🤖 正在解析任務規則...");
       const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
       
-      const prompt = `
-# Role: Task Extractor (JSON ONLY)
-# Context: Now is ${now.toISOString()} (Taipei Time)
-# Rules:
-1. "rule" options: "none", "daily", "weekly:1,2", "monthly:5", "yearly:MM-DD".
-2. If user says "本月每天", set rule to "daily" and task name should include month info if needed.
-3. If it's a summary-style task (no specific time or all-day), set "isAllDay": true.
-# Input: "${text}"`;
-
       try {
+        const prompt = getTaskPrompt(text, now);
         const json = await callAI(env, prompt);
-        await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(()=>{});
+        
+        await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(e => {
+          console.warn("刪除等待訊息失敗:", e.message);
+        });
+        
         await sendConfirmation(ctx, {
           task: json.task || "未命名任務",
           remindAt: json.time ? Math.floor(new Date(json.time).getTime() / 1000) : -1,
@@ -52,7 +211,10 @@ export default {
           allDay: json.isAllDay ? 1 : 0,
           source: '🧠 AI'
         });
-      } catch (e) { await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, "❌ AI 解析失敗。"); }
+      } catch (e) {
+        console.error("AI 處理失敗:", e.message);
+        await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, `❌ AI 解析失敗: ${e.message}`);
+      }
     }
 
     // --- 3. AI 處理：查詢邏輯 ---
@@ -61,15 +223,24 @@ export default {
       if (!queryText) {
           return mode === "list" ? await renderList(ctx, env, "今天") : await renderHistory(ctx, env, "最近");
       }
-      const waitMsg = await ctx.reply("🔍 正在定位日期...");
+      
+      const waitMsg = await ctx.reply("🔍 正在定位日期範圍...");
       const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
-      const prompt = `{"start": number, "end": number, "label": "string"} for query: ${queryText}. Now: ${now.toISOString()}`;
+      
       try {
+        const prompt = getQueryPrompt(queryText, now);
         const range = await callAI(env, prompt);
-        await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(()=>{});
+        
+        await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(e => {
+          console.warn("刪除等待訊息失敗:", e.message);
+        });
+        
         if (mode === "list") await renderList(ctx, env, range.label, range.start, range.end);
         else await renderHistory(ctx, env, range.label, range.start, range.end);
-      } catch (e) { await ctx.reply("❌ 無法理解時間，請試試「今天」或「昨天」。"); }
+      } catch (e) {
+        console.error("查詢處理失敗:", e.message);
+        await ctx.reply(`❌ 無法理解時間範圍，請試試「今天」或「昨天」。`);
+      }
     }
 
     // --- 4. 渲染清單 ---
@@ -109,7 +280,7 @@ export default {
       await ctx.reply(msg);
     }
 
-    // --- 5. 儲存與 Callback (包含多選刪除邏輯) ---
+    // --- 5. 儲存與 Callback (SQL 注入修復) ---
     async function sendConfirmation(ctx, state) {
       let timeStr = state.remindAt === -1 ? "無時間限制" : new Date(state.remindAt * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'});
       if (state.allDay) timeStr += " (全天)";
@@ -122,49 +293,117 @@ export default {
     bot.on("callback_query:data", async (ctx) => {
       const data = ctx.callbackQuery.data;
       const userId = ctx.from.id.toString();
-      if (data === "cancel") return ctx.editMessageText("已取消");
+      
+      if (data === "cancel") return ctx.editMessageText("已取消。");
+      
       if (data.startsWith("sv|")) {
         const [_, ts, rule, allDay] = data.split("|");
         const taskName = ctx.callbackQuery.message.text.split("\n")[0].replace("📌 任務：", "");
-        await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, cron_rule, all_day, status) VALUES (?, ?, ?, ?, ?, 0)")
-          .bind(userId, taskName, parseInt(ts), rule === 'n' ? null : rule, parseInt(allDay)).run();
-        return ctx.editMessageText("✅ 儲存成功！");
+        try {
+          await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, cron_rule, all_day, status) VALUES (?, ?, ?, ?, ?, 0)")
+            .bind(userId, taskName, parseInt(ts), rule === 'n' ? null : rule, parseInt(allDay)).run();
+          return ctx.editMessageText("✅ 儲存成功！");
+        } catch (e) {
+          console.error("儲存任務失敗:", e.message);
+          return ctx.editMessageText("❌ 儲存失敗，請重試。");
+        }
       }
+      
       if (data === "manage_mode") {
+        try {
           const { results } = await env.DB.prepare("SELECT * FROM todos WHERE user_id = ? AND status = 0").bind(userId).all();
-          if (!results.length) return ctx.editMessageText("📭 無任務。");
+          if (!results.length) return ctx.editMessageText("📭 無活躍任務。");
           const kb = new InlineKeyboard();
           results.forEach(t => kb.text(`⬜️ ${t.task}`, `tog|${t.id}|`).row());
           kb.text("❌ 取消", "cancel").text("🗑️ 永久刪除", "conf_del|");
-          await ctx.editMessageText("請點擊刪除任務：", { reply_markup: kb });
+          await ctx.editMessageText("請勾選要刪除的任務：", { reply_markup: kb });
+        } catch (e) {
+          console.error("管理模式失敗:", e.message);
+          ctx.editMessageText("❌ 載入任務失敗。");
+        }
       }
+      
       if (data.startsWith("tog|")) {
+        try {
           const [_, tid, sIds] = data.split("|");
           let sSet = new Set(sIds ? sIds.split(",") : []);
           sSet.has(tid) ? sSet.delete(tid) : sSet.add(tid);
+          
           const { results } = await env.DB.prepare("SELECT * FROM todos WHERE user_id = ? AND status = 0").bind(userId).all();
           const kb = new InlineKeyboard();
           const newList = Array.from(sSet).join(",");
           results.forEach(t => kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${t.task}`, `tog|${t.id}|${newList}`).row());
-          kb.text("❌ 取消", "cancel").text("🗑️ 永久刪除", `conf_del|${newList}`);
-          await ctx.editMessageText("請點擊勾選任務：", { reply_markup: kb });
+          kb.text("❌ 取消", "cancel").text("🗑️ 刪除", `conf_del|${newList}`);
+          await ctx.editMessageText("請勾選要刪除的任務：", { reply_markup: kb });
+        } catch (e) {
+          console.error("切換任務失敗:", e.message);
+          ctx.answerCallbackQuery("操作失敗，請重試。");
+        }
       }
+      
       if (data.startsWith("conf_del|")) {
-          const ids = data.split("|")[1].split(",");
-          if (!ids[0]) return ctx.answerCallbackQuery("請至少勾選一個");
-          await env.DB.prepare(`DELETE FROM todos WHERE id IN (${ids.map(()=>"?").join(",")}) AND user_id = ?`).bind(...ids, userId).run();
-          return ctx.editMessageText("🗑️ 任務已永久刪除。");
+        try {
+          const idsStr = data.split("|")[1];
+          if (!idsStr || !idsStr.trim()) {
+            return ctx.answerCallbackQuery("請至少勾選一個任務。");
+          }
+          
+          const ids = idsStr.split(",").filter(id => id.trim() && /^\d+$/.test(id));
+          if (ids.length === 0) {
+            return ctx.answerCallbackQuery("無效的任務 ID。");
+          }
+          
+          // SQL 注入防護：驗證 ID 並使用參數化查詢
+          const placeholders = ids.map(() => '?').join(',');
+          await env.DB.prepare(`
+            DELETE FROM todos 
+            WHERE id IN (${placeholders}) 
+            AND user_id = ?
+          `).bind(...ids, userId).run();
+          
+          await ctx.editMessageText("🗑️ 任務已永久刪除。");
+        } catch (e) {
+          console.error("刪除任務失敗:", e.message);
+          ctx.editMessageText("❌ 刪除失敗，請重試。");
+        }
       }
     });
 
+    // --- 6. 修復 AI 調用 (URL + 解析) ---
     async function callAI(env, prompt) {
-      const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${env.POLLINATIONS_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: "nova-micro", messages: [{ role: "user", content: prompt }], jsonMode: true })
-      });
-      const data = await res.json();
-      return JSON.parse(data.choices[0].message.content.match(/\{[\s\S]*\}/)[0]);
+      try {
+        // 修復 URL：移除末尾空格
+        const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 
+            'Authorization': `Bearer ${env.POLLINATIONS_API_KEY}`, 
+            'Content-Type': 'application/json' 
+          },
+          body: JSON.stringify({ 
+            model: "nova-micro", 
+            messages: [{ role: "user", content: prompt }], 
+            jsonMode: true 
+          }),
+          timeout: 10000 // 10 秒超時
+        });
+        
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new Error(`AI API 錯誤 ${res.status}: ${errorText.substring(0, 200)}`);
+        }
+
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content || '';
+        
+        if (!content) {
+          throw new Error("空的 AI 回應");
+        }
+        
+        return await parseAIResponse(content);
+      } catch (e) {
+        console.error("AI 調用失敗:", e.message);
+        throw new Error("AI 服務暫時不可用，請稍後再試。");
+      }
     }
 
     if (request.method === "POST") {
@@ -175,69 +414,82 @@ export default {
     return new Response("OK");
   },
 
-  // --- 6. 定時提醒與彙整邏輯 (核心：將週期任務加入早晚報) ---
+  // --- 7. 修復定時工作 (無時間漂移) ---
   async scheduled(event, env, ctx) {
     const bot = new Bot(env.BOT_TOKEN);
     const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
     const nowTs = Math.floor(Date.now() / 1000);
 
-    // 1. 處理「精確時間」提醒
-    const { results: timedTasks } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0 AND all_day = 0 AND remind_at > 0 AND remind_at <= ?").bind(nowTs).all();
-    for (const todo of timedTasks) {
-      await bot.api.sendMessage(todo.user_id, `🔔 提醒：${todo.task}`);
-      if (!todo.cron_rule) {
-        await env.DB.prepare("UPDATE todos SET status = 1 WHERE id = ?").bind(todo.id).run();
-      } else {
-        await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(todo.user_id, todo.task, todo.remind_at).run();
-        const nextTs = calculateNextFromRule(todo.remind_at, todo.cron_rule);
-        await env.DB.prepare("UPDATE todos SET remind_at = ? WHERE id = ?").bind(nextTs, todo.id).run();
+    try {
+      // 1. 處理精確時間提醒
+      const { results: timedTasks } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0 AND all_day = 0 AND remind_at > 0 AND remind_at <= ?").bind(nowTs).all();
+      for (const todo of timedTasks) {
+        try {
+          await bot.api.sendMessage(todo.user_id, `🔔 提醒：${todo.task}`);
+          if (!todo.cron_rule) {
+            await env.DB.prepare("UPDATE todos SET status = 1 WHERE id = ?").bind(todo.id).run();
+          } else {
+            await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(todo.user_id, todo.task, todo.remind_at).run();
+            const nextTs = calculateNextFromRule(todo.remind_at, todo.cron_rule);
+            await env.DB.prepare("UPDATE todos SET remind_at = ? WHERE id = ?").bind(nextTs, todo.id).run();
+          }
+        } catch (e) {
+          console.error(`任務 ${todo.id} 提醒失敗:`, e.message);
+        }
       }
-    }
 
-    // 2. 早晚彙整 (9:00 & 21:00)
-    const hour = now.getHours();
-    const minute = now.getMinutes();
-    if ((hour === 9 || hour === 21) && minute < 2) {
-      const { results: allActive } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0").all();
-      const userGroups = allActive.reduce((acc, t) => {
-          acc[t.user_id] = acc[t.user_id] || [];
-          acc[t.user_id].push(t);
-          return acc;
-      }, {});
+      // 2. 早晚彙整 (9:00 & 21:00)
+      const hour = now.getHours();
+      const minute = now.getMinutes();
+      if ((hour === 9 || hour === 21) && minute < 2) {
+        try {
+          const { results: allActive } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0").all();
+          const userGroups = allActive.reduce((acc, t) => {
+            acc[t.user_id] = acc[t.user_id] || [];
+            acc[t.user_id].push(t);
+            return acc;
+          }, {});
 
-      for (const [uid, tasks] of Object.entries(userGroups)) {
-          // 過濾出：無時間任務 OR 今天符合規則的週期任務 OR 今天的所有全天任務
-          const todayTasks = tasks.filter(t => {
-              if (t.remind_at === -1) return true; // 無時間
-              if (t.all_day === 1) { // 全天任務
-                  const d = new Date(t.remind_at * 1000 + TAIPEI_OFFSET * 60000);
-                  if (d.toLocaleDateString('zh-TW') === now.toLocaleDateString('zh-TW')) return true;
+          for (const [uid, tasks] of Object.entries(userGroups)) {
+            const todayTasks = tasks.filter(t => {
+              if (t.remind_at === -1) return true;
+              if (t.all_day === 1) {
+                const d = new Date(t.remind_at * 1000 + TAIPEI_OFFSET * 60000);
+                return d.toLocaleDateString('zh-TW') === now.toLocaleDateString('zh-TW');
               }
-              if (t.cron_rule) return checkRuleMatch(now, t.cron_rule); // 週期任務(每天/每週...)
+              if (t.cron_rule) return checkRuleMatch(now, t.cron_rule);
               return false;
-          });
+            });
 
-          if (todayTasks.length) {
+            if (todayTasks.length) {
               const listStr = todayTasks.map(t => `• ${t.task}${t.cron_rule ? ' (🔄)' : ''}`).join("\n");
               const timeLabel = hour === 9 ? "☀️ 早上" : "🌙 晚上";
               await bot.api.sendMessage(uid, `📝 ${timeLabel}任務彙整：\n\n${listStr}`);
               
-              // 彙整後處理：單次全天任務標記為完成
               for (const t of todayTasks) {
+                try {
                   if (!t.cron_rule && (t.all_day === 1 || t.remind_at === -1)) {
-                      await env.DB.prepare("UPDATE todos SET status = 1 WHERE id = ?").bind(t.id).run();
+                    await env.DB.prepare("UPDATE todos SET status = 1 WHERE id = ?").bind(t.id).run();
                   } else if (t.cron_rule) {
-                      // 週期任務留歷史副本
-                      await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(uid, t.task, nowTs).run();
+                    await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(uid, t.task, nowTs).run();
                   }
+                } catch (e) {
+                  console.error(`任務 ${t.id} 歸檔失敗:`, e.message);
+                }
               }
+            }
           }
+        } catch (e) {
+          console.error("每日彙整失敗:", e.message);
+        }
       }
+    } catch (e) {
+      console.error("定時工作失敗:", e.message);
     }
   }
 };
 
-// --- 工具函數 ---
+// --- 8. 修復工具函數 (無時間漂移) ---
 function checkRuleMatch(targetDate, rule) {
   if (rule === 'daily') return true;
   if (rule.startsWith('weekly:')) {
@@ -254,22 +506,42 @@ function checkRuleMatch(targetDate, rule) {
 }
 
 function calculateNextFromRule(lastTs, rule) {
-  let date = new Date((lastTs + 60) * 1000); 
-  if (rule === 'daily') date.setDate(date.getDate() + 1);
-  else if (rule.startsWith('weekly:')) {
+  // 修復：移除 +60 避免時間漂移
+  let date = new Date(lastTs * 1000); 
+  
+  if (rule === 'daily') {
+    date.setDate(date.getDate() + 1);
+  } else if (rule.startsWith('weekly:')) {
     const days = rule.split(':')[1].split(',').map(Number);
+    let found = false;
     for (let i = 0; i < 8; i++) {
       date.setDate(date.getDate() + 1);
-      if (days.includes(date.getDay() === 0 ? 7 : date.getDay())) break;
+      const dayOfWeek = date.getDay() === 0 ? 7 : date.getDay();
+      if (days.includes(dayOfWeek)) {
+        found = true;
+        break;
+      }
     }
+    if (!found) date.setDate(date.getDate() + 1); // 安全 fallback
   } else if (rule.startsWith('monthly:')) {
+    const dayOfMonth = parseInt(rule.split(':')[1]);
     date.setMonth(date.getMonth() + 1);
-    date.setDate(parseInt(rule.split(':')[1]));
+    date.setDate(dayOfMonth);
+    // 處理無效日期 (如 2/30)
+    if (date.getDate() !== dayOfMonth) {
+      date.setMonth(date.getMonth() - 1);
+      date.setDate(1);
+      date.setMonth(date.getMonth() + 1, 0); // 設為上個月的最後一天
+    }
   } else if (rule.startsWith('yearly:')) {
     const [m, d] = rule.split(':')[1].split('-').map(Number);
     date.setFullYear(date.getFullYear() + 1);
-    date.setMonth(m - 1); date.setDate(d);
+    date.setMonth(m - 1);
+    date.setDate(d);
   }
+  
+  // 確保時間在台北時區的 00:00
+  date.setHours(0, 0, 0, 0);
   return Math.floor(date.getTime() / 1000);
 }
 
@@ -278,7 +550,7 @@ function parseTimeLocally(text) {
   const results = chrono.parse(text, ref, { forwardDate: true });
   if (!results.length) return null;
   const r = results[0];
-  let task = text.replace(r.text, "").replace(/提醒我|記得|幫我/g, "").trim();
+  let task = text.replace(r.text, "").replace(/remind me|remember|help me|提醒我|記得|幫我/gi, "").trim();
   let utcTs = Math.floor((r.date().getTime() - TAIPEI_OFFSET * 60000) / 1000);
   return { task: task || "未命名任務", utcTimestamp: utcTs };
 }
