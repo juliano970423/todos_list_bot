@@ -362,9 +362,11 @@ export default {
 
     const data = await res.json();
     const content = data.choices[0].message.content;
-    
-    // 直接解析，不做任何修改
-    return JSON.parse(content.trim());
+    const json = JSON.parse(content);
+    if (typeof json.task !== 'string') { // 防禦性檢查
+      json.task = JSON.stringify(json.task) || "未命名任務"; // 緊急轉換
+    }
+    return json;
   } catch (e) {
     console.error("AI 調用失敗:", e.message);
     throw new Error("AI 服務暫時不可用");
