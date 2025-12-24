@@ -122,45 +122,14 @@ function getQueryPrompt(queryText, now) {
 `;
 }
 
-// --- 強健的 AI 回應解析器 ---
+// AI回應解析
 async function parseAIResponse(content) {
   try {
-    // 清理並提取 JSON
-    let cleanContent = content
-      .replace(/```json|```/g, '')
-      .replace(/^[^{]*|[^}]*$/g, '')
-      .trim();
-    
-    // 處理常見的 AI 格式問題
-    if (!cleanContent.startsWith('{')) {
-      const firstBrace = cleanContent.indexOf('{');
-      if (firstBrace !== -1) cleanContent = cleanContent.substring(firstBrace);
-    }
-    if (!cleanContent.endsWith('}')) {
-      const lastBrace = cleanContent.lastIndexOf('}');
-      if (lastBrace !== -1) cleanContent = cleanContent.substring(0, lastBrace + 1);
-    }
-
-    // 解析並驗證
-    const json = JSON.parse(cleanContent);
-    
-    // 強制字段要求
-    if (!json.task || typeof json.task !== 'string') {
-      json.task = "未命名任務";
-    }
-    if (json.time === "Invalid Date" || json.time === "null" || json.time === "" || !json.time) {
-      json.time = null;
-    }
-    if (!json.rule || typeof json.rule !== 'string') {
-      json.rule = "none";
-    }
-    if (json.isAllDay === undefined) {
-      json.isAllDay = false;
-    }
-    
-    return json;
+    // 直接解析，不做任何清理
+    const jsonStr = content.trim();
+    return JSON.parse(jsonStr);
   } catch (e) {
-    console.error("AI 回應解析失敗:", content);
+    console.error("❌ AI 回應解析失敗:", content);
     throw new Error(`無效的 AI 回應格式: ${e.message}`);
   }
 }
@@ -369,50 +338,38 @@ export default {
       }
     });
 
-    // --- 6. 修復 AI 調用 (URL + 解析) ---
+    // --- 6. AI 調用 (URL + 解析) ---
     async function callAI(env, prompt) {
-      try {
-        // 修復 URL：移除末尾空格
-        const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
-          method: 'POST',
-          headers: { 
-            'Authorization': `Bearer ${env.POLLINATIONS_API_KEY}`, 
-            'Content-Type': 'application/json' 
-          },
-          body: JSON.stringify({ 
-            model: "nova-micro", 
-            messages: [{ role: "user", content: prompt }], 
-            jsonMode: true 
-          }),
-          timeout: 10000 // 10 秒超時
-        });
-        
-        if (!res.ok) {
-          const errorText = await res.text();
-          throw new Error(`AI API 錯誤 ${res.status}: ${errorText.substring(0, 200)}`);
-        }
-
-        const data = await res.json();
-        const content = data.choices?.[0]?.message?.content || '';
-        
-        if (!content) {
-          throw new Error("空的 AI 回應");
-        }
-        
-        return await parseAIResponse(content);
-      } catch (e) {
-        console.error("AI 調用失敗:", e.message);
-        throw new Error("AI 服務暫時不可用，請稍後再試。");
-      }
+  try {
+    const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 
+        'Authorization': `Bearer ${env.POLLINATIONS_API_KEY}`,
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify({ 
+        model: "nova-micro", 
+        messages: [{ role: "user", content: prompt }], 
+        jsonMode: true 
+      }),
+      timeout: 10000
+    });
+    
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`AI API 錯誤 ${res.status}`);
     }
 
-    if (request.method === "POST") {
-      await bot.init();
-      await bot.handleUpdate(await request.json());
-      return new Response("OK");
-    }
-    return new Response("OK");
-  },
+    const data = await res.json();
+    const content = data.choices[0].message.content;
+    
+    // 直接解析，不做任何修改
+    return JSON.parse(content.trim());
+  } catch (e) {
+    console.error("AI 調用失敗:", e.message);
+    throw new Error("AI 服務暫時不可用");
+  }
+}
 
   // --- 7. 修復定時工作 (無時間漂移) ---
   async scheduled(event, env, ctx) {
