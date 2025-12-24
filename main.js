@@ -400,10 +400,10 @@ export default {
         e.rawContent = rawContent; 
         throw e;
       }
-    }
+    },
 
   // --- 9. 定時任務 (Cron Trigger) ---
-  scheduled: async(event, env, ctx) {
+  async schedule(event, env, ctx) {
     const bot = new Bot(env.BOT_TOKEN);
     const nowTs = Math.floor(Date.now() / 1000);
     const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
