@@ -403,7 +403,7 @@ export default {
     }
 
   // --- 9. 定時任務 (Cron Trigger) ---
-  async scheduled(event, env, ctx) {
+  async scheduled => (event, env, ctx) {
     const bot = new Bot(env.BOT_TOKEN);
     const nowTs = Math.floor(Date.now() / 1000);
     const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
