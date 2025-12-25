@@ -7,6 +7,7 @@ export default {
   async fetch(request, env, ctx) {
     await initDatabase(env);
     const bot = new Bot(env.BOT_TOKEN);
+    await bot.init(); // 初始化機器人
 
     // --- 1. 訊息接收與分流 ---
     bot.on("message:text", async (ctx) => {
