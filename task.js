@@ -1,0 +1,144 @@
+// task.js - 任務處理模組
+import { InlineKeyboard } from "grammy";
+import { formatTimestampToTaipeiTime } from "./time.js";
+import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime } from "./db.js";
+import { calculateNext } from "./time.js";
+
+// 翻譯規則顯示文字
+function translateRule(rule) {
+    if (!rule || rule === 'none') return "單次";
+    if (rule === 'daily') return "每天";
+    if (rule.startsWith('weekly:')) return "每週";
+    if (rule.startsWith('monthly:')) return "每月";
+    if (rule.startsWith('yearly:')) return "每年";
+    return rule;
+}
+
+// --- 4. 渲染清單 (List) ---
+async function renderList(ctx, env, label, startTs = null, endTs = null) {
+  const userId = ctx.from.id.toString();
+  const results = await getTodos(env, userId, 0);
+
+  const start = startTs || Math.floor(new Date().setHours(0,0,0,0)/1000);
+  const end = endTs || Math.floor(new Date().setHours(23,59,59,999)/1000);
+
+  const filtered = results.filter(t => {
+    if (t.cron_rule) return true; // 週期性任務總是顯示
+    return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
+  });
+
+  if (!filtered.length) return ctx.reply(`📭 ${label} 沒有待辦事項。`);
+
+  let msg = `📋 <b>${label} 任務清單：</b>\n`;
+  filtered.forEach((t, i) => {
+    let timeDisplay = "";
+
+    if (t.cron_rule) {
+      timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
+      if (t.remind_at > 0) {
+        timeDisplay += " " + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false});
+      }
+    } else if (t.all_day) {
+      timeDisplay = "☀️ 全天";
+    } else if (t.remind_at !== -1) {
+      timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
+    } else {
+      timeDisplay = "無期限";
+    }
+
+    msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
+  });
+  await ctx.reply(msg, {
+    parse_mode: "HTML",
+    reply_markup: new InlineKeyboard().text("🗑️ 管理模式", "manage_mode")
+  });
+}
+
+// --- 5. 渲染歷史 (History) ---
+async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
+  const userId = ctx.from.id.toString();
+  let results;
+  
+  if (startTs && endTs) {
+    results = await getTodosByTimeRange(env, userId, startTs, endTs, 1);
+  } else {
+    results = await getTodos(env, userId, 1);
+  }
+
+  if (!results.length) return ctx.reply(`📚 ${label} 無完成紀錄。`);
+  let msg = `📚 <b>${label} 完成紀錄：</b>\n`;
+  results = results.slice(0, 15); // 限制顯示15筆
+  results.forEach((t, i) => {
+    const d = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
+    msg += `${i+1}. [${d}] ✅ ${t.task}\n`;
+  });
+  await ctx.reply(msg, { parse_mode: "HTML" });
+}
+
+// --- 6. 確認與儲存 (UI) ---
+async function sendConfirmation(ctx, state) {
+  let timeStr = formatTimestampToTaipeiTime(state.remindAt);
+  if (state.allDay) timeStr += " (全天)";
+
+  const ruleText = state.cronRule ? translateRule(state.cronRule) : "單次";
+
+  const kb = new InlineKeyboard()
+    .text("✅ 確認儲存", `sv|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`)
+    .text("❌ 取消", "cancel");
+
+  let msg = `📌 <b>任務確認</b>\n` +
+            `📝 內容：${state.task}\n` +
+            `⏰ 時間：${timeStr}\n` +
+            `🔄 規則：${ruleText}\n` +
+            `🔍 來源：${state.source}`;
+
+  // 如果有 debugRaw，顯示在訊息下方 (使用單行代碼格式，避免過長)
+  if (state.debugRaw) {
+      msg += `\n\n🛠 <b>AI 原始數據：</b>\n<code>${state.debugRaw}</code>`;
+  }
+
+  await ctx.reply(msg, { parse_mode: "HTML", reply_markup: kb });
+}
+
+// 處理定時任務提醒
+async function processScheduledReminders(bot, env) {
+  const nowTs = Math.floor(Date.now() / 1000);
+  const now = new Date(Date.now() + 8 * 60 * 60000); // 台北時間
+
+  try {
+    // 1. 檢查提醒 (精確時間)
+    const { results } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0 AND all_day = 0 AND remind_at > 0 AND remind_at <= ?").bind(nowTs).all();
+
+    for (const todo of results) {
+      await bot.api.sendMessage(todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${todo.task}`, { parse_mode: "HTML" });
+
+      if (!todo.cron_rule) {
+        // 單次任務 -> 標記完成
+        await env.DB.prepare("UPDATE todos SET status = 1 WHERE id = ?").bind(todo.id).run();
+      } else {
+        // 循環任務 -> 記錄歷史 + 更新下次時間
+        await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(todo.user_id, todo.task, todo.remind_at).run();
+        const nextTs = calculateNext(todo.remind_at, todo.cron_rule);
+        await env.DB.prepare("UPDATE todos SET remind_at = ? WHERE id = ?").bind(nextTs, todo.id).run();
+      }
+    }
+
+    // 2. 每日彙整 (早晚 9 點)
+    const h = now.getUTCHours();
+    const m = now.getUTCMinutes();
+    if ((h === 9 || h === 21) && m < 5) {
+       // (簡化版：實際部署可加入彙整通知邏輯)
+       // console.log("執行每日彙整檢查...");
+    }
+  } catch (e) {
+    console.error("Cron Error:", e);
+  }
+}
+
+export {
+  renderList,
+  renderHistory,
+  sendConfirmation,
+  processScheduledReminders,
+  translateRule
+};
