@@ -8,7 +8,22 @@ import { calculateNext } from "./time.js";
 function translateRule(rule) {
     if (!rule || rule === 'none') return "單次";
     if (rule === 'daily') return "每天";
-    if (rule.startsWith('weekly:')) return "每週";
+    if (rule.startsWith('weekly:')) {
+        const days = rule.split(':')[1];
+        if (days === '1,2,3,4,5') return "週一至週五";
+        if (days === '6,7') return "週末";
+        if (days === '1,3,5') return "週一、週三、週五";
+        if (days === '2,4,6') return "週二、週四、週六";
+        // 如果是單一天，例如 'weekly:1' 代表週一
+        if (/^\d+$/.test(days)) {
+            const dayMap = {
+                '1': '週一', '2': '週二', '3': '週三',
+                '4': '週四', '5': '週五', '6': '週六', '7': '週日'
+            };
+            return `每${dayMap[days] || '週'}`;
+        }
+        return "每週";
+    }
     if (rule.startsWith('monthly:')) return "每月";
     if (rule.startsWith('yearly:')) return "每年";
     return rule;
@@ -36,10 +51,16 @@ async function renderList(ctx, env, label, startTs = null, endTs = null) {
     if (t.cron_rule) {
       timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
       if (t.remind_at > 0) {
-        timeDisplay += " " + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false});
+        if (t.all_day) {
+          // 對於全天的週期任務，只顯示日期
+          timeDisplay += " " + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        } else {
+          timeDisplay += " " + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false});
+        }
       }
     } else if (t.all_day) {
-      timeDisplay = "☀️ 全天";
+      // 對於全天任務，只顯示日期
+      timeDisplay = "☀️ " + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)";
     } else if (t.remind_at !== -1) {
       timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
     } else {
@@ -69,16 +90,31 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
   let msg = `📚 <b>${label} 完成紀錄：</b>\n`;
   results = results.slice(0, 15); // 限制顯示15筆
   results.forEach((t, i) => {
-    const d = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
-    msg += `${i+1}. [${d}] ✅ ${t.task}\n`;
+    let timeStr;
+    if (t.all_day) {
+      // 對於全天任務，只顯示日期
+      timeStr = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)";
+    } else {
+      timeStr = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
+    }
+    msg += `${i+1}. [${timeStr}] ✅ ${t.task}\n`;
   });
   await ctx.reply(msg, { parse_mode: "HTML" });
 }
 
 // --- 6. 確認與儲存 (UI) ---
 async function sendConfirmation(ctx, state) {
-  let timeStr = formatTimestampToTaipeiTime(state.remindAt);
-  if (state.allDay) timeStr += " (全天)";
+  let timeStr;
+  if (state.remindAt === -1) {
+    timeStr = "無時間限制";
+  } else if (state.allDay) {
+    // 對於全天任務，只顯示日期，不顯示具體時間
+    const date = new Date(state.remindAt * 1000);
+    timeStr = date.toLocaleString('zh-TW', {timeZone:'Asia/Taipei', year:'numeric', month:'numeric', day:'numeric'});
+    timeStr += " (全天)";
+  } else {
+    timeStr = formatTimestampToTaipeiTime(state.remindAt);
+  }
 
   const ruleText = state.cronRule ? translateRule(state.cronRule) : "單次";
 

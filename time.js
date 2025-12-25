@@ -40,15 +40,12 @@ function getDayEndTimestamp() {
 }
 
 // 將時間戳轉換為台北時間字串
-function formatTimestampToTaipeiTime(timestamp, includeTime = true) {
+function formatTimestampToTaipeiTime(timestamp) {
   if (timestamp === -1) return "無時間限制";
-  
+
   const date = new Date(timestamp * 1000);
-  if (includeTime) {
-    return date.toLocaleString('zh-TW', {timeZone:'Asia/Taipei', hour12:false});
-  } else {
-    return date.toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
-  }
+  // 返回包含時分秒的完整時間
+  return date.toLocaleString('zh-TW', {timeZone:'Asia/Taipei', hour12:false});
 }
 
 export {

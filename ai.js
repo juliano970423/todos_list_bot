@@ -33,14 +33,18 @@ Analyze the USER INPUT and extract structured data (JSON).
 1. **task**: Extract the core activity. Remove time keywords (e.g., "remind me", "tomorrow", "at 9pm").
 2. **time**:
    - Output ISO 8601 format with timezone: "YYYY-MM-DDTHH:mm:ss+08:00".
-   - If the user implies a time (e.g. "tonight", "Jan 1st"), CALCULATE the exact date based on CURRENT TIME.
-   - If "Jan 1st" is in the past relative to now, assume NEXT YEAR.
-   - If no time specified, use null.
+   - If the user implies a time (e.g. "tonight", "Jan 1st at 9am"), CALCULATE the exact date and time based on CURRENT TIME.
+   - If "Jan 1st" is in the past relative to now (2025-12-25), assume NEXT YEAR (2026).
+   - If no time specified and event is all-day (like "Jan 1st", "Christmas"), use "YYYY-MM-DDT00:00:00+08:00" and set isAllDay to true.
+   - If no time specified and event is NOT all-day, use null.
 3. **rule** (Recurrence):
    - **DEFAULT: null** (This is a one-time task).
-   - ONLY use "daily", "weekly:1", etc., if user EXPLICITLY says "Every day", "Daily", "Each week".
+   - ONLY use "daily" if user EXPLICITLY says "Every day", "Daily", "Each day".
+   - For weekly: Use "weekly:1" for "every Monday", "weekly:2" for "every Tuesday", etc.
+   - For multiple days: Use "weekly:1,2,3,4,5" for "Mon-Fri", "weekly:1,3,5" for "Mon, Wed, Fri", etc.
+   - For weekly recurring: "weekly:1,2,3,4,5" for "Mon-Fri", "weekly:6,7" for "weekends".
    - "Tonight at 9pm" -> rule: null (It is NOT daily).
-4. **isAllDay**: true if no specific hour:minute is mentioned (e.g., "Buy milk tomorrow").
+4. **isAllDay**: true if no specific hour:minute is mentioned (e.g., "Buy milk tomorrow"), OR for events like "Jan 1st" that are typically all-day. For recurring daily/weekly events, set to false unless explicitly all-day.
 
 # USER INPUT:
 "${text}"
@@ -49,7 +53,7 @@ Analyze the USER INPUT and extract structured data (JSON).
 {
   "task": "Clean text without time",
   "time": "ISO-8601-String" or null,
-  "rule": "daily" or "weekly:X" or null,
+  "rule": "daily", "weekly:1,2,3,4,5" (for Mon-Fri), etc., or null,
   "isAllDay": true/false
 }
 `;
