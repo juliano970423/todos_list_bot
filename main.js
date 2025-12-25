@@ -18,7 +18,10 @@ export default {
       await handleCallbackQuery(ctx, env);
     });
 
-    return bot.handle(request);
+    // 使用 Grammy 的 webhook 适配器
+    const update = await request.json();
+    await bot.handleUpdate(update);
+    return new Response("OK");
   },
 
   // --- 9. 定時任務 (Cron Trigger) ---
