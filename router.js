@@ -176,6 +176,24 @@ async function handleQuery(ctx, env, text, mode) {
     if (mode === "list") await renderList(ctx, env, json.label, json.start, json.end);
     else await renderHistory(ctx, env, json.label, json.start, json.end);
   } catch (e) {
+    // 如果是 JSON 解析錯誤，嘗試從原始回應中提取 JSON 部分
+    if (e.message.includes("JSON") && e.rawContent) {
+      try {
+        // 尋找 JSON 部分
+        const jsonMatch = e.rawContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const jsonStr = jsonMatch[0];
+          const json = JSON.parse(jsonStr);
+
+          if (mode === "list") await renderList(ctx, env, json.label, json.start, json.end);
+          else await renderHistory(ctx, env, json.label, json.start, json.end);
+          return;
+        }
+      } catch (parseErr) {
+        // 如果仍然解析失敗，顯示錯誤
+      }
+    }
+
     await ctx.reply(`❌ 查詢範圍解析失敗：${e.message}\n原始回應：${e.rawContent || "null"}`);
   }
 }

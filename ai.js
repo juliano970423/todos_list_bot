@@ -75,14 +75,16 @@ Parse the user's natural language time description into a precise Unix timestamp
 1. TIMEZONE: Must use Asia/Taipei (UTC+8).
 2. DURATION LOGIC:
    - "Today": Start from 00:00:00 to 23:59:59.
-   - "Last Week": Calculate the previous Mon-Sun range.
-3. OUTPUT: Strictly return a valid JSON object. No conversational filler.
+   - "Yesterday": Start from previous day 00:00:00 to 23:59:59.
+   - "This Week": Start from Monday 00:00:00 to Sunday 23:59:59.
+   - Date ranges like "2025/12/27": Start from 00:00:00 to 23:59:59 on that day.
+3. OUTPUT: Strictly return a valid JSON object. No conversational filler or comments.
 
-# OUTPUT FORMAT
+# OUTPUT FORMAT (Return JSON only, no other text):
 {
-  "start": number, // Unix timestamp in seconds
-  "end": number,   // Unix timestamp in seconds
-  "label": "string" // Human-readable date range in Chinese
+  "start": number,
+  "end": number,
+  "label": "string"
 }
 
 # INPUT QUERY
