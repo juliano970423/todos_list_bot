@@ -33,7 +33,7 @@ Analyze the USER INPUT and extract structured data (JSON).
 1. **task**: Extract the core activity. Remove time keywords (e.g., "remind me", "tomorrow", "at 9pm").
 2. **time**:
    - Extract time expressions from user input, but do not calculate exact dates.
-   - If user says specific time (e.g. "9pm", "9:30", "9點"), return just that time: "9:00", "9:30", "9:00".
+   - If user says specific time (e.g. "9pm", "9:30", "9點", "晚上8點58分"), return just that time: "21:00", "21:30", "21:00", "20:58".
    - If user says specific date (e.g. "Jan 1st", "1月1號"), return just that date: "01-01", "01-01".
    - If user says both date and time (e.g. "Jan 1st at 9pm"), return both: "2026-01-01T21:00".
    - If no specific time/date mentioned, return null.
@@ -41,6 +41,9 @@ Analyze the USER INPUT and extract structured data (JSON).
    - **DEFAULT: null** (This is a one-time task).
    - ONLY use "daily" if user EXPLICITLY says "Every day", "Daily", "Each day", "每天".
    - ONLY use "weekly:X" if user EXPLICITLY says "Every week on X", "每周X", "每週X".
+   - ONLY use "weekly:1,2,3,4,5" if user says "週一到週五", "Monday to Friday", "Mon-Fri".
+   - ONLY use "weekly:1,2,3,4,5,6" if user says "週一到週六".
+   - ONLY use "weekly:6,7" if user says "週末", "weekends".
    - ONLY use "monthly:X" if user EXPLICITLY says "Every month on X", "每月X".
    - ONLY use "yearly:X" if user EXPLICITLY says "Every year on X", "每年X", "每年的X".
    - "Tonight at 9pm" -> rule: null.

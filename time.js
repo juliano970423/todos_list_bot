@@ -24,7 +24,14 @@ function calculateNext(lastTs, rule) {
   if (rule === 'daily') d.setDate(d.getDate() + 1);
   else if (rule.startsWith('weekly:')) d.setDate(d.getDate() + 7);
   else if (rule.startsWith('monthly:')) d.setMonth(d.getMonth() + 1);
-  else if (rule.startsWith('yearly:')) d.setFullYear(d.getFullYear() + 1);
+  else if (rule.startsWith('yearly:')) {
+    d.setFullYear(d.getFullYear() + 1);
+    // 確保在閏年的2月29日之後的年份中，日期被正確調整
+    if (d.getMonth() === 1 && d.getDate() === 29 && !(d.getFullYear() % 4 === 0 && (d.getFullYear() % 100 !== 0 || d.getFullYear() % 400 === 0))) {
+      // 如果是閏年2月29日，但下一年不是閏年，則設為2月28日
+      d.setDate(28);
+    }
+  }
 
   return Math.floor(d.getTime() / 1000);
 }

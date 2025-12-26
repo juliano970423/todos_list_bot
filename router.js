@@ -52,42 +52,58 @@ async function processTaskWithAI(ctx, env, text) {
 
     // 處理時間 - 由 JavaScript 解析 AI 提取的時間字符串
     if (json.time) {
-      // 使用 chrono 解析 AI 提取的時間字符串
       const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
-      const results = chrono.parse(json.time, refDate, { forwardDate: true });
+      let date;
 
-      if (results.length > 0) {
-        let date = results[0].date();
+      // 檢查時間字符串是否包含日期格式 (MM-DD)
+      if (json.time.includes('-') && !json.time.includes('T')) {
+        // 如果時間字符串是 "MM-DD" 格式，需要構建完整的日期
+        const [month, day] = json.time.split('-');
+        // 使用 Date 構造函數構建日期，避免字符串解析問題
+        const monthNum = parseInt(month);
+        const dayNum = parseInt(day);
+        date = new Date(refDate.getFullYear(), monthNum - 1, dayNum);
 
-        // 如果是週期性任務，確保時間是未來的
-        if (json.rule && (json.rule.startsWith('daily') || json.rule.startsWith('weekly:') || json.rule.startsWith('monthly:') || json.rule.startsWith('yearly:'))) {
-          if (date.getTime() <= refDate.getTime()) {
-            // 如果日期已過，根據規則類型計算下一個日期
-            if (json.rule.startsWith('yearly:')) {
-              date.setFullYear(date.getFullYear() + 1);
-            } else if (json.rule.startsWith('monthly:')) {
-              date.setMonth(date.getMonth() + 1);
-            } else if (json.rule.startsWith('weekly:')) {
-              date.setDate(date.getDate() + 7);
-            } else if (json.rule === 'daily') {
-              date.setDate(date.getDate() + 1);
+        // 如果日期已過，則設為明年
+        if (date.getTime() <= refDate.getTime()) {
+          date = new Date(refDate.getFullYear() + 1, monthNum - 1, dayNum);
+        }
+      } else {
+        // 使用 chrono 解析 AI 提取的時間字符串 (包括中文時間)
+        const results = chrono.parse(json.time, refDate, { forwardDate: true });
+
+        if (results.length > 0) {
+          date = results[0].date();
+
+          // 如果是週期性任務，確保時間是未來的
+          if (json.rule && (json.rule.startsWith('daily') || json.rule.startsWith('weekly:') || json.rule.startsWith('monthly:') || json.rule.startsWith('yearly:'))) {
+            if (date.getTime() <= refDate.getTime()) {
+              // 如果日期已過，根據規則類型計算下一個日期
+              if (json.rule.startsWith('yearly:')) {
+                date.setFullYear(date.getFullYear() + 1);
+              } else if (json.rule.startsWith('monthly:')) {
+                date.setMonth(date.getMonth() + 1);
+              } else if (json.rule.startsWith('weekly:')) {
+                date.setDate(date.getDate() + 7);
+              } else if (json.rule === 'daily') {
+                date.setDate(date.getDate() + 1);
+              }
             }
           }
+        } else {
+          // 如果 chrono 無法解析，嘗試直接解析 ISO 時間
+          // 或者嘗試解析中文時間表達
+          date = new Date(json.time);
+
+          if (isNaN(date.getTime())) {
+             // 時間解析失敗，拋出錯誤供使用者排查
+             throw new Error(`時間格式無效 (Invalid Date): ${json.time}`);
+          }
         }
-
-        // 修正時區偏移
-        remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
-      } else {
-        // 如果 chrono 無法解析，嘗試直接解析 ISO 時間
-        let dateObj = new Date(json.time);
-
-        if (isNaN(dateObj.getTime())) {
-           // 時間解析失敗，拋出錯誤供使用者排查
-           throw new Error(`時間格式無效 (Invalid Date): ${json.time}`);
-        }
-
-        remindTs = Math.floor(dateObj.getTime() / 1000);
       }
+
+      // 修正時區偏移
+      remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
     }
 
     // 處理任務名稱 (如果 AI 把任務名稱吃掉了，用原文補救)
