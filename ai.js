@@ -32,17 +32,17 @@ Analyze the USER INPUT and extract structured data (JSON).
 # CRITICAL RULES (Follow Strictly):
 1. **task**: Extract the core activity. Remove time keywords (e.g., "remind me", "tomorrow", "at 9pm").
 2. **time**:
-   - Output ISO 8601 format with timezone: "YYYY-MM-DDTHH:mm:ss+08:00".
-   - If the user implies a time (e.g. "tonight", "Jan 1st at 9am"), CALCULATE the exact date and time based on CURRENT TIME.
-   - If "Jan 1st" is in the past relative to now (2025-12-25), assume NEXT YEAR (2026).
-   - If no time specified and event is all-day (like "Jan 1st", "Christmas"), use "YYYY-MM-DDT00:00:00+08:00" and set isAllDay to true.
-   - If no time specified and event is NOT all-day, use null.
+   - Extract time expressions from user input, but do not calculate exact dates.
+   - If user says specific time (e.g. "9pm", "9:30", "9點"), return just that time: "9:00", "9:30", "9:00".
+   - If user says specific date (e.g. "Jan 1st", "1月1號"), return just that date: "01-01", "01-01".
+   - If user says both date and time (e.g. "Jan 1st at 9pm"), return both: "2026-01-01T21:00".
+   - If no specific time/date mentioned, return null.
 3. **rule** (Recurrence):
    - **DEFAULT: null** (This is a one-time task).
    - ONLY use "daily" if user EXPLICITLY says "Every day", "Daily", "Each day".
    - **Weekly mapping (Monday starts at 1):**
      - Use "weekly:1" (Mon), "weekly:2" (Tue), "weekly:3" (Wed), "weekly:4" (Thu), "weekly:5" (Fri), "weekly:6" (Sat), "weekly:7" (Sun).
-   - For multiple days: 
+   - For multiple days:
      - "Mon-Fri" -> "weekly:1,2,3,4,5"
      - "Weekends" -> "weekly:6,7"
      - "Mon, Wed, Fri" -> "weekly:1,3,5"
@@ -55,7 +55,7 @@ Analyze the USER INPUT and extract structured data (JSON).
 # OUTPUT FORMAT (JSON Only):
 {
   "task": "Clean text without time",
-  "time": "ISO-8601-String" or null,
+  "time": "Time/Date string as extracted from user input" or null,
   "rule": "daily", "weekly:1,2,3,4,5" (for Mon-Fri), etc., or null,
   "isAllDay": true/false
 }
@@ -73,7 +73,7 @@ Parse the user's natural language time description into a precise Unix timestamp
 
 # RULES
 1. TIMEZONE: Must use Asia/Taipei (UTC+8).
-2. DURATION LOGIC: 
+2. DURATION LOGIC:
    - "Today": Start from 00:00:00 to 23:59:59.
    - "Last Week": Calculate the previous Mon-Sun range.
 3. OUTPUT: Strictly return a valid JSON object. No conversational filler.

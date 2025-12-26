@@ -1,5 +1,6 @@
 // router.js - 路由處理模組
 import { Bot, InlineKeyboard } from "grammy";
+import * as chrono from "chrono-node";
 import { getTaskPrompt, getQueryPrompt, callAI, parseTimeLocally } from "./ai.js";
 import { sendConfirmation, renderList, renderHistory } from "./task.js";
 import { addTodo, getTodos, deleteTodosByIds } from "./db.js";
@@ -49,22 +50,27 @@ async function processTaskWithAI(ctx, env, text) {
     // 驗證並處理 AI 回傳的數據
     let remindTs = -1;
 
-    // 處理時間
+    // 處理時間 - 由 JavaScript 解析 AI 提取的時間字符串
     if (json.time) {
-      // 嘗試解析 ISO 時間
-      let dateObj = new Date(json.time);
+      // 使用 chrono 解析 AI 提取的時間字符串
+      const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+      const results = chrono.parse(json.time, refDate, { forwardDate: true });
 
-      // 如果 AI 忘記給時區 (防呆)，強制加上 +08:00
-      if (json.time.indexOf('+') === -1 && json.time.indexOf('Z') === -1) {
-         dateObj = new Date(json.time + "+08:00");
+      if (results.length > 0) {
+        const date = results[0].date();
+        // 修正時區偏移
+        remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
+      } else {
+        // 如果 chrono 無法解析，嘗試直接解析 ISO 時間
+        let dateObj = new Date(json.time);
+
+        if (isNaN(dateObj.getTime())) {
+           // 時間解析失敗，拋出錯誤供使用者排查
+           throw new Error(`時間格式無效 (Invalid Date): ${json.time}`);
+        }
+
+        remindTs = Math.floor(dateObj.getTime() / 1000);
       }
-
-      if (isNaN(dateObj.getTime())) {
-         // 時間解析失敗，拋出錯誤供使用者排查
-         throw new Error(`時間格式無效 (Invalid Date): ${json.time}`);
-      }
-
-      remindTs = Math.floor(dateObj.getTime() / 1000);
     }
 
     // 處理任務名稱 (如果 AI 把任務名稱吃掉了，用原文補救)
