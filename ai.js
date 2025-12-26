@@ -39,13 +39,10 @@ Analyze the USER INPUT and extract structured data (JSON).
    - If no specific time/date mentioned, return null.
 3. **rule** (Recurrence):
    - **DEFAULT: null** (This is a one-time task).
-   - ONLY use "daily" if user EXPLICITLY says "Every day", "Daily", "Each day".
-   - **Weekly mapping (Monday starts at 1):**
-     - Use "weekly:1" (Mon), "weekly:2" (Tue), "weekly:3" (Wed), "weekly:4" (Thu), "weekly:5" (Fri), "weekly:6" (Sat), "weekly:7" (Sun).
-   - For multiple days:
-     - "Mon-Fri" -> "weekly:1,2,3,4,5"
-     - "Weekends" -> "weekly:6,7"
-     - "Mon, Wed, Fri" -> "weekly:1,3,5"
+   - ONLY use "daily" if user EXPLICITLY says "Every day", "Daily", "Each day", "每天".
+   - ONLY use "weekly:X" if user EXPLICITLY says "Every week on X", "每周X", "每週X".
+   - ONLY use "monthly:X" if user EXPLICITLY says "Every month on X", "每月X".
+   - ONLY use "yearly:X" if user EXPLICITLY says "Every year on X", "每年X", "每年的X".
    - "Tonight at 9pm" -> rule: null.
 4. **isAllDay**: true if no specific hour:minute is mentioned (e.g., "Buy milk tomorrow"), OR for events like "Jan 1st" that are typically all-day. For recurring daily/weekly events, set to false unless explicitly all-day.
 
@@ -56,7 +53,7 @@ Analyze the USER INPUT and extract structured data (JSON).
 {
   "task": "Clean text without time",
   "time": "Time/Date string as extracted from user input" or null,
-  "rule": "daily", "weekly:1,2,3,4,5" (for Mon-Fri), etc., or null,
+  "rule": "daily", "weekly:1,2,3,4,5", "monthly:X", "yearly:X", etc., or null,
   "isAllDay": true/false
 }
 `;

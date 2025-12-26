@@ -57,7 +57,24 @@ async function processTaskWithAI(ctx, env, text) {
       const results = chrono.parse(json.time, refDate, { forwardDate: true });
 
       if (results.length > 0) {
-        const date = results[0].date();
+        let date = results[0].date();
+
+        // 如果是週期性任務，確保時間是未來的
+        if (json.rule && (json.rule.startsWith('daily') || json.rule.startsWith('weekly:') || json.rule.startsWith('monthly:') || json.rule.startsWith('yearly:'))) {
+          if (date.getTime() <= refDate.getTime()) {
+            // 如果日期已過，根據規則類型計算下一個日期
+            if (json.rule.startsWith('yearly:')) {
+              date.setFullYear(date.getFullYear() + 1);
+            } else if (json.rule.startsWith('monthly:')) {
+              date.setMonth(date.getMonth() + 1);
+            } else if (json.rule.startsWith('weekly:')) {
+              date.setDate(date.getDate() + 7);
+            } else if (json.rule === 'daily') {
+              date.setDate(date.getDate() + 1);
+            }
+          }
+        }
+
         // 修正時區偏移
         remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
       } else {
@@ -83,6 +100,23 @@ async function processTaskWithAI(ctx, env, text) {
     // 處理規則 (過濾 none/null 字串)
     let finalRule = json.rule;
     if (finalRule === 'none' || finalRule === 'null') finalRule = null;
+
+    // 如果是 yearly 規則，需要特殊處理時間
+    if (finalRule && finalRule.startsWith('yearly:')) {
+      // 對於 yearly 任務，需要計算下一個相符的日期
+      const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+      const results = chrono.parse(json.time, refDate, { forwardDate: true });
+
+      if (results.length > 0) {
+        let date = results[0].date();
+        // 確保日期是未來的
+        if (date.getTime() <= refDate.getTime()) {
+          // 如果日期已過，設為明年
+          date.setFullYear(date.getFullYear() + 1);
+        }
+        remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
+      }
+    }
 
     await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
 
