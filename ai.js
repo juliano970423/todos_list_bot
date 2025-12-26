@@ -40,10 +40,13 @@ Analyze the USER INPUT and extract structured data (JSON).
 3. **rule** (Recurrence):
    - **DEFAULT: null** (This is a one-time task).
    - ONLY use "daily" if user EXPLICITLY says "Every day", "Daily", "Each day".
-   - For weekly: Use "weekly:1" for "every Monday", "weekly:2" for "every Tuesday", etc.
-   - For multiple days: Use "weekly:1,2,3,4,5" for "Mon-Fri", "weekly:1,3,5" for "Mon, Wed, Fri", etc.
-   - For weekly recurring: "weekly:1,2,3,4,5" for "Mon-Fri", "weekly:6,7" for "weekends".
-   - "Tonight at 9pm" -> rule: null (It is NOT daily).
+   - **Weekly mapping (Monday starts at 1):**
+     - Use "weekly:1" (Mon), "weekly:2" (Tue), "weekly:3" (Wed), "weekly:4" (Thu), "weekly:5" (Fri), "weekly:6" (Sat), "weekly:7" (Sun).
+   - For multiple days: 
+     - "Mon-Fri" -> "weekly:1,2,3,4,5"
+     - "Weekends" -> "weekly:6,7"
+     - "Mon, Wed, Fri" -> "weekly:1,3,5"
+   - "Tonight at 9pm" -> rule: null.
 4. **isAllDay**: true if no specific hour:minute is mentioned (e.g., "Buy milk tomorrow"), OR for events like "Jan 1st" that are typically all-day. For recurring daily/weekly events, set to false unless explicitly all-day.
 
 # USER INPUT:
@@ -62,12 +65,31 @@ Analyze the USER INPUT and extract structured data (JSON).
 function getQueryPrompt(queryText, now) {
   const nowStr = getTaipeiTimeString(now);
   return `
-# ROLE: Time Range Calculator
-# CURRENT TIME: ${nowStr}
-# INPUT: "${queryText}"
-# OUTPUT JSON: {"start": UNIX_TIMESTAMP, "end": UNIX_TIMESTAMP, "label": "Display Name"}
+# ROLE: Expert Time Parser
+# CURRENT TIME: ${nowStr} (Taipei Time, UTC+8)
+
+# TASK
+Parse the user's natural language time description into a precise Unix timestamp range.
+
+# RULES
+1. TIMEZONE: Must use Asia/Taipei (UTC+8).
+2. DURATION LOGIC: 
+   - "Today": Start from 00:00:00 to 23:59:59.
+   - "Last Week": Calculate the previous Mon-Sun range.
+3. OUTPUT: Strictly return a valid JSON object. No conversational filler.
+
+# OUTPUT FORMAT
+{
+  "start": number, // Unix timestamp in seconds
+  "end": number,   // Unix timestamp in seconds
+  "label": "string" // Human-readable date range in Chinese
+}
+
+# INPUT QUERY
+"${queryText}"
 `;
 }
+
 
 // --- 8. AI API 調用 (強化版：回傳 raw content) ---
 async function callAI(env, prompt) {
