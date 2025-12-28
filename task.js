@@ -1,6 +1,6 @@
 // task.js - 任務處理模組
 import { InlineKeyboard } from "grammy";
-import { formatTimestampToTaipeiTime } from "./time.js";
+import { formatTimestampToTaipeiTime, TAIPEI_OFFSET } from "./time.js";
 import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime } from "./db.js";
 import { calculateNext } from "./time.js";
 
@@ -139,13 +139,29 @@ async function sendConfirmation(ctx, state) {
 // 處理定時任務提醒
 async function processScheduledReminders(bot, env) {
   const nowTs = Math.floor(Date.now() / 1000);
-  const now = new Date(Date.now() + 8 * 60 * 60000); // 台北時間
+  const nowTaipei = new Date(Date.now() + TAIPEI_OFFSET * 60 * 1000);
+  const currentDayOfWeek = nowTaipei.getDay(); // 0 for Sunday, 1 for Monday, ..., 6 for Saturday
+  const currentDayOfWeekISO = currentDayOfWeek === 0 ? 7 : currentDayOfWeek; // Convert to ISO (1 for Mon, ..., 7 for Sun)
 
   try {
     // 1. 檢查提醒 (精確時間)
-    const { results } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0 AND all_day = 0 AND remind_at > 0 AND remind_at <= ?").bind(nowTs).all();
+    const { results: allReminders } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0 AND remind_at > 0 AND remind_at <= ?").bind(nowTs).all();
 
-    for (const todo of results) {
+    // 過濾出符合當前星期幾的任務（對於週期性任務）
+    const remindersToProcess = [];
+    for (const todo of allReminders) {
+      if (todo.cron_rule && todo.cron_rule.startsWith('weekly:')) {
+        const days = todo.cron_rule.split(':')[1].split(',').map(Number);
+        if (days.includes(currentDayOfWeekISO)) {
+          remindersToProcess.push(todo);
+        }
+      } else {
+        // 非 weekly 循環任務或單次任務，直接加入處理列表
+        remindersToProcess.push(todo);
+      }
+    }
+
+    for (const todo of remindersToProcess) {
       await bot.api.sendMessage(todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${todo.task}`, { parse_mode: "HTML" });
 
       if (!todo.cron_rule) {
@@ -160,8 +176,8 @@ async function processScheduledReminders(bot, env) {
     }
 
     // 2. 每日彙整 (早晚 9 點)
-    const h = now.getUTCHours();
-    const m = now.getUTCMinutes();
+    const h = nowTaipei.getUTCHours();
+    const m = nowTaipei.getUTCMinutes();
     if ((h === 9 || h === 21) && m < 5) {
        // (簡化版：實際部署可加入彙整通知邏輯)
        // console.log("執行每日彙整檢查...");

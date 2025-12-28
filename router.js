@@ -55,8 +55,13 @@ async function processTaskWithAI(ctx, env, text) {
       const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
       let date;
 
+      // 檢查時間字符串是否包含 ISO 格式日期時間 (YYYY-MM-DDTHH:mm)
+      if (json.time.includes('T')) {
+        // 如果是 ISO 格式，直接解析
+        date = new Date(json.time);
+      }
       // 檢查時間字符串是否包含日期格式 (MM-DD)
-      if (json.time.includes('-') && !json.time.includes('T')) {
+      else if (json.time.includes('-') && !json.time.includes('T')) {
         // 如果時間字符串是 "MM-DD" 格式，需要構建完整的日期
         const [month, day] = json.time.split('-');
         // 使用 Date 構造函數構建日期，避免字符串解析問題
