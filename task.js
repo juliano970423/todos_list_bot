@@ -110,6 +110,8 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
 
   if (!results.length) return ctx.reply(`📚 ${label} 無完成紀錄。`);
   let msg = `📚 <b>${label} 完成紀錄：</b>\n`;
+  // 按提醒時間從近到遠排序（最近的在前）
+  results.sort((a, b) => b.remind_at - a.remind_at);
   results = results.slice(0, 15); // 限制顯示15筆
   results.forEach((t, i) => {
     let timeStr;

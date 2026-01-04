@@ -109,6 +109,63 @@ async function processTaskWithAI(ctx, env, text) {
 
       // 修正時區偏移
       remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
+    } else if (json.rule) {
+      // 如果沒有提供時間但有規則（週期性任務），計算下一個執行時間
+      const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+      let date = new Date(refDate); // 從當前時間開始計算
+
+      if (json.rule.startsWith('daily')) {
+        // 每日任務，設為明天
+        date.setDate(date.getDate() + 1);
+      } else if (json.rule.startsWith('weekly:')) {
+        // 週期性週任務，計算下一個符合規則的日期
+        const days = json.rule.split(':')[1].split(',').map(Number);
+        const currentDayOfWeekISO = date.getDay() === 0 ? 7 : date.getDay(); // Convert to ISO (1 for Mon, ..., 7 for Sun)
+
+        let nextDayOffset = 1;
+        let found = false;
+
+        while (nextDayOffset <= 7 && !found) {
+          let potentialDay = (currentDayOfWeekISO + nextDayOffset) % 7;
+          if (potentialDay === 0) potentialDay = 7; // Sunday should be 7, not 0
+          if (days.includes(potentialDay)) {
+            found = true;
+            date.setDate(date.getDate() + nextDayOffset);
+          } else {
+            nextDayOffset++;
+          }
+        }
+      } else if (json.rule.startsWith('monthly:')) {
+        // 月度任務，計算下一個符合規則的日期
+        const dayOfMonth = parseInt(json.rule.split(':')[1]);
+        const currentDay = refDate.getDate();
+
+        if (currentDay < dayOfMonth) {
+          // 如果當月的指定日期還沒到，就設為本月的該日期
+          date.setDate(dayOfMonth);
+        } else {
+          // 如果當月的指定日期已過，就設為下個月的該日期
+          date.setMonth(date.getMonth() + 1);
+          date.setDate(dayOfMonth);
+        }
+      } else if (json.rule.startsWith('yearly:')) {
+        // 年度任務，計算下一個符合規則的日期
+        const monthDay = json.rule.split(':')[1]; // 格式為 MM-DD
+        const [month, day] = monthDay.split('-').map(Number);
+        const currentMonth = refDate.getMonth();
+        const currentDay = refDate.getDate();
+
+        date.setMonth(month - 1); // 月份從0開始
+        date.setDate(day);
+
+        // 如果今年的日期已過，則設為明年
+        if (date.getTime() <= refDate.getTime()) {
+          date.setFullYear(date.getFullYear() + 1);
+        }
+      }
+
+      // 修正時區偏移
+      remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
     }
 
     // 處理任務名稱 (如果 AI 把任務名稱吃掉了，用原文補救)
