@@ -21,10 +21,30 @@ function calculateNext(lastTs, rule) {
   // 基於上次設定的時間計算下次時間 (避免時間漂移)
   let d = new Date(lastTs * 1000);
 
-  if (rule === 'daily') d.setDate(d.getDate() + 1);
-  else if (rule.startsWith('weekly:')) d.setDate(d.getDate() + 7);
-  else if (rule.startsWith('monthly:')) d.setMonth(d.getMonth() + 1);
-  else if (rule.startsWith('yearly:')) {
+  if (rule === 'daily') {
+    d.setDate(d.getDate() + 1);
+  } else if (rule.startsWith('weekly:')) {
+    // 對於週期性週任務，需要計算下一個符合規則的日期
+    const days = rule.split(':')[1].split(',').map(Number);
+    const currentDayOfWeekISO = d.getDay() === 0 ? 7 : d.getDay(); // Convert to ISO (1 for Mon, ..., 7 for Sun)
+
+    // 找到當前日期後下一個符合規則的日期
+    let nextDayOffset = 1;
+    let found = false;
+
+    while (nextDayOffset <= 7 && !found) {
+      let potentialDay = (currentDayOfWeekISO + nextDayOffset) % 7;
+      if (potentialDay === 0) potentialDay = 7; // Sunday should be 7, not 0
+      if (days.includes(potentialDay)) {
+        found = true;
+        d.setDate(d.getDate() + nextDayOffset);
+      } else {
+        nextDayOffset++;
+      }
+    }
+  } else if (rule.startsWith('monthly:')) {
+    d.setMonth(d.getMonth() + 1);
+  } else if (rule.startsWith('yearly:')) {
     d.setFullYear(d.getFullYear() + 1);
     // 確保在閏年的2月29日之後的年份中，日期被正確調整
     if (d.getMonth() === 1 && d.getDate() === 29 && !(d.getFullYear() % 4 === 0 && (d.getFullYear() % 100 !== 0 || d.getFullYear() % 400 === 0))) {
