@@ -37,17 +37,28 @@ async function renderList(ctx, env, label, startTs = null, endTs = null) {
   const start = startTs || Math.floor(new Date().setHours(0,0,0,0)/1000);
   const end = endTs || Math.floor(new Date().setHours(23,59,59,999)/1000);
 
-  const now = new Date();
-  const currentDayOfWeekISO = now.getDay() === 0 ? 7 : now.getDay(); // Convert to ISO (1 for Mon, ..., 7 for Sun)
-
   const filtered = results.filter(t => {
     if (t.cron_rule) {
-      // 對於週期性任務，只在符合規則的日期顯示
+      // 對於週期性任務，需要檢查在指定時間範圍內是否有符合規則的日期
       if (t.cron_rule.startsWith('weekly:')) {
         const days = t.cron_rule.split(':')[1].split(',').map(Number);
-        return days.includes(currentDayOfWeekISO);
+
+        // 檢查時間範圍內是否有符合週期規則的日期
+        const startDate = new Date(start * 1000);
+        const endDate = new Date(end * 1000);
+
+        // 遍歷時間範圍內的每一天，檢查是否有符合規則的日期
+        let currentDate = new Date(startDate);
+        while (currentDate <= endDate) {
+          const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay(); // Convert to ISO (1 for Mon, ..., 7 for Sun)
+          if (days.includes(dayOfWeekISO)) {
+            return true; // 如果時間範圍內有符合規則的日期，則顯示此任務
+          }
+          currentDate.setDate(currentDate.getDate() + 1); // 移動到下一天
+        }
+        return false; // 時間範圍內沒有符合規則的日期
       }
-      // 其他週期性任務（daily, monthly, yearly）仍然顯示
+      // daily 週期性任務在任何時間範圍內都顯示
       return t.cron_rule === 'daily';
     }
     return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
@@ -176,7 +187,8 @@ async function processScheduledReminders(bot, env) {
       await bot.api.sendMessage(todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${todo.task}`, { parse_mode: "HTML" });
 
       if (!todo.cron_rule) {
-        // 單次任務 -> 標記完成
+        // 單次任務 -> 記錄歷史 + 標記完成
+        await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(todo.user_id, todo.task, todo.remind_at).run();
         await env.DB.prepare("UPDATE todos SET status = 1 WHERE id = ?").bind(todo.id).run();
       } else {
         // 循環任務 -> 記錄歷史 + 更新下次時間
