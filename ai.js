@@ -30,7 +30,7 @@ function getTaskPrompt(text, now) {
 Analyze the USER INPUT and extract structured data (JSON).
 
 # CRITICAL RULES (Follow Strictly):
-1. **task**: Extract the core activity. Remove time keywords (e.g., "remind me", "tomorrow", "at 9pm").
+1. **task**: Extract the core activity. Remove time keywords (e.g., "remind me", "tomorrow", "at 9pm", "提醒我", "記得", "幫我", "要").
 2. **time**:
    - Extract time expressions from user input, but do not calculate exact dates.
    - If user says specific time (e.g. "9pm", "9:30", "9點", "晚上8點58分"), return just that time: "21:00", "21:30", "21:00", "20:58".
