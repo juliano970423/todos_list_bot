@@ -34,12 +34,14 @@ Analyze the USER INPUT and extract structured data (JSON).
 2. **time**:
    - Extract time expressions from user input, but do not calculate exact dates.
    - If user says specific time (e.g. "9pm", "9:30", "9點", "晚上8點58分"), return just that time: "21:00", "21:30", "21:00", "20:58".
-   - If user says specific date (e.g. "Jan 1st", "1月1號"), calculate the full date for the *current year* (or next year if the date has passed) and return it in ISO format with time 00:00:00, e.g., "2026-01-01T00:00". Do not return just "MM-DD".
-   - If user says both date and time (e.g. "Jan 1st at 9pm"), return both: "2026-01-01T21:00".
+   - If user says specific date (e.g. "Jan 1st", "1月1號", "兩天後", "後天", "明天", "下週一"), calculate the full date for the *current year* (or next year if the date has passed) and return it in ISO format with time 00:00:00, e.g., "2026-01-01T00:00". Do not return just "MM-DD".
+   - For relative time expressions like "N天後" (N days later), "N週後" (N weeks later), "N個月後" (N months later), "N年後" (N years later), calculate the exact future date and return in ISO format: "2026-01-03T00:00" for "兩天後".
+   - If user says both date and time (e.g. "Jan 1st at 9pm", "兩天後晚上9點"), return both: "2026-01-03T21:00".
    - If no specific time/date mentioned, return null.
 3. **rule** (Recurrence):
    - **DEFAULT: null** (This is a one-time task).
-   - CRITICAL: If a specific date is mentioned (e.g., "1月1號", "Jan 1st") *without any explicit recurrence keywords* (like "每年", "每週", "每日"), the 'rule' MUST be 'null'. Do NOT infer recurrence from specific dates alone.
+   - CRITICAL: If a specific date is mentioned (e.g., "1月1號", "Jan 1st", "兩天後", "後天", "明天") *without any explicit recurrence keywords* (like "每年", "每週", "每日"), the 'rule' MUST be 'null'. Do NOT infer recurrence from specific dates alone.
+   - CRITICAL: For relative time expressions like "N天後" (N days later), "N週後" (N weeks later), "N個月後" (N months later), "N年後" (N years later), the 'rule' MUST be 'null'. These are ONE-TIME events, NOT recurring.
    - ONLY use "daily" if user EXPLICITLY says "Every day", "Daily", "Each day", "每天".
    - ONLY use "weekly:X" if user EXPLICITLY says "Every week on X", "每周X", "每週X".
    - ONLY use "weekly:1,2,3,4,5" if user says "週一到週五", "Monday to Friday", "Mon-Fri".
