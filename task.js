@@ -37,8 +37,19 @@ async function renderList(ctx, env, label, startTs = null, endTs = null) {
   const start = startTs || Math.floor(new Date().setHours(0,0,0,0)/1000);
   const end = endTs || Math.floor(new Date().setHours(23,59,59,999)/1000);
 
+  const now = new Date();
+  const currentDayOfWeekISO = now.getDay() === 0 ? 7 : now.getDay(); // Convert to ISO (1 for Mon, ..., 7 for Sun)
+
   const filtered = results.filter(t => {
-    if (t.cron_rule) return true; // 週期性任務總是顯示
+    if (t.cron_rule) {
+      // 對於週期性任務，只在符合規則的日期顯示
+      if (t.cron_rule.startsWith('weekly:')) {
+        const days = t.cron_rule.split(':')[1].split(',').map(Number);
+        return days.includes(currentDayOfWeekISO);
+      }
+      // 其他週期性任務（daily, monthly, yearly）仍然顯示
+      return t.cron_rule === 'daily';
+    }
     return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
   });
 

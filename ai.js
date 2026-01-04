@@ -80,11 +80,15 @@ Parse the user's natural language time description into a precise Unix timestamp
 # RULES
 1. TIMEZONE: Must use Asia/Taipei (UTC+8).
 2. DURATION LOGIC:
-   - "Today": Start from 00:00:00 to 23:59:59.
-   - "Yesterday": Start from previous day 00:00:00 to 23:59:59.
-   - "This Week": Start from Monday 00:00:00 to Sunday 23:59:59.
+   - "Today" or "今天": Start from 00:00:00 to 23:59:59.
+   - "Yesterday" or "昨天": Start from previous day 00:00:00 to 23:59:59.
+   - "This Week" or "本週": Start from Monday 00:00:00 to Sunday 23:59:59.
    - Date ranges like "2025/12/27": Start from 00:00:00 to 23:59:59 on that day.
 3. OUTPUT: Strictly return a valid JSON object. No conversational filler or comments.
+4. LABEL LANGUAGE: The "label" field in the output must be in Chinese (中文), not English. Examples:
+   - For "today" or "今天": label should be "今天"
+   - For "yesterday" or "昨天": label should be "昨天"
+   - For "this week" or "本週": label should be "本週"
 
 # OUTPUT FORMAT (Return JSON only, no other text):
 {

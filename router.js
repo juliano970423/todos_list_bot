@@ -166,7 +166,17 @@ async function processTaskWithAI(ctx, env, text) {
 async function handleQuery(ctx, env, text, mode) {
   const queryText = text.replace(/^\/(list|history)\s*/, "").trim();
   if (!queryText) {
-      return mode === "list" ? await renderList(ctx, env, "今天") : await renderHistory(ctx, env, "最近");
+      if (mode === "list") {
+          // 無參數時顯示最近一週的任務
+          const now = new Date();
+          const startOfWeek = new Date(now);
+          startOfWeek.setDate(now.getDate() - 7); // 最近7天
+          const startTs = Math.floor(startOfWeek.setHours(0,0,0,0)/1000);
+          const endTs = Math.floor(new Date().setHours(23,59,59,999)/1000);
+          return await renderList(ctx, env, "近期", startTs, endTs);
+      } else {
+          return await renderHistory(ctx, env, "最近");
+      }
   }
 
   const waitMsg = await ctx.reply("🔍 查詢範圍中...");
