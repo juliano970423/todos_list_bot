@@ -34,9 +34,12 @@ Analyze the USER INPUT and extract structured data (JSON).
 2. **time**:
    - Extract time expressions from user input, but do not calculate exact dates.
    - If user says specific time (e.g. "9pm", "9:30", "9點", "晚上8點58分"), return just that time: "21:00", "21:30", "21:00", "20:58".
-   - If user says specific date (e.g. "Jan 1st", "1月1號", "兩天後", "後天", "明天", "下週一"), calculate the full date for the *current year* (or next year if the date has passed) and return it in ISO format with time 00:00:00, e.g., "2026-01-01T00:00". Do not return just "MM-DD".
+   - If user says specific date (e.g. "Jan 1st", "1月1號", "兩天後", "後天", "明天", "今天", "下週一"), calculate the full date for the *current year* (or next year if the date has passed) and return it in ISO format with time 00:00:00, e.g., "2026-01-01T00:00". Do not return just "MM-DD".
    - For relative time expressions like "N天後" (N days later), "N週後" (N weeks later), "N個月後" (N months later), "N年後" (N years later), calculate the exact future date and return in ISO format: "2026-01-03T00:00" for "兩天後".
-   - If user says both date and time (e.g. "Jan 1st at 9pm", "兩天後晚上9點"), return both: "2026-01-03T21:00".
+   - For "今天" (today), calculate the current date and return in ISO format: "2026-01-04T00:00" for "今天".
+   - For "明天" (tomorrow), calculate the next date and return in ISO format: "2026-01-05T00:00" for "明天".
+   - For "後天" (the day after tomorrow), calculate the date 2 days from now and return in ISO format: "2026-01-06T00:00" for "後天".
+   - If user says both date and time (e.g. "Jan 1st at 9pm", "兩天後晚上9點", "今天下午8點52分"), return both: "2026-01-03T21:00", "2026-01-04T20:52".
    - If no specific time/date mentioned, return null.
 3. **rule** (Recurrence):
    - **DEFAULT: null** (This is a one-time task).
