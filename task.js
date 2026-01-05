@@ -71,14 +71,17 @@ async function renderList(ctx, env, label, startTs = null, endTs = null) {
     let timeDisplay = "";
 
     if (t.cron_rule) {
-      timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
+      // 對於週期性任務，顯示具體時間後加上週期條件
       if (t.remind_at > 0) {
         if (t.all_day) {
-          // 對於全天的週期任務，只顯示日期
-          timeDisplay += " " + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+          // 對於全天的週期任務，顯示日期和週期條件
+          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
         } else {
-          timeDisplay += " " + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', hour:'2-digit', minute:'2-digit', hour12:false});
+          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false}) + ` (${translateRule(t.cron_rule)})`;
         }
+      } else {
+        // 如果沒有具體時間，顯示週期條件
+        timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
       }
     } else if (t.all_day) {
       // 對於全天任務，只顯示日期
