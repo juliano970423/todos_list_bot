@@ -230,7 +230,7 @@ async function handleQuery(ctx, env, text, mode) {
           startOfWeek.setDate(now.getDate() - 7); // 最近7天
           const startTs = Math.floor(startOfWeek.setHours(0,0,0,0)/1000);
           const endTs = Math.floor(new Date().setHours(23,59,59,999)/1000);
-          return await renderList(ctx, env, "近期", startTs, endTs);
+          return await renderList(ctx, env, "近期", startTs, endTs, null);
       } else {
           return await renderHistory(ctx, env, "最近");
       }
@@ -245,7 +245,7 @@ async function handleQuery(ctx, env, text, mode) {
 
     await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
 
-    if (mode === "list") await renderList(ctx, env, json.label, json.start, json.end);
+    if (mode === "list") await renderList(ctx, env, json.label, json.start, json.end, json);
     else await renderHistory(ctx, env, json.label, json.start, json.end);
   } catch (e) {
     // 如果是 JSON 解析錯誤，嘗試從原始回應中提取 JSON 部分

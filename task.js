@@ -30,7 +30,7 @@ function translateRule(rule) {
 }
 
 // --- 4. 渲染清單 (List) ---
-async function renderList(ctx, env, label, startTs = null, endTs = null) {
+async function renderList(ctx, env, label, startTs = null, endTs = null, aiResult = null) {
   const userId = ctx.from.id.toString();
   const results = await getTodos(env, userId, 0);
 
@@ -94,6 +94,15 @@ async function renderList(ctx, env, label, startTs = null, endTs = null) {
 
     msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
   });
+  // 如果有 AI 解析結果，添加到消息末尾
+  if (aiResult) {
+    msg += `\n\n🔍 <b>AI 解析結果：</b>\n`;
+    msg += `<code>標籤: ${aiResult.label || 'N/A'}`;
+    if (aiResult.start !== undefined) msg += `\n開始時間: ${new Date(aiResult.start * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} (${aiResult.start})`;
+    if (aiResult.end !== undefined) msg += `\n結束時間: ${new Date(aiResult.end * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} (${aiResult.end})`;
+    msg += '</code>';
+  }
+
   await ctx.reply(msg, {
     parse_mode: "HTML",
     reply_markup: new InlineKeyboard().text("🗑️ 管理模式", "manage_mode")
