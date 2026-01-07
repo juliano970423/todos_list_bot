@@ -74,35 +74,136 @@ async function processTaskWithAI(ctx, env, text) {
           date = new Date(refDate.getFullYear() + 1, monthNum - 1, dayNum);
         }
       } else {
-        // 使用 chrono 解析 AI 提取的時間字符串 (包括中文時間)
-        const results = chrono.parse(json.time, refDate, { forwardDate: true });
+        // 新增：解析 AI 返回的模糊時間格式（支援中英文）
+        // 處理 "today 20:52", "tomorrow", "in 2 days", "today 20:52" 等英文格式
+        let parsedDate = null;
 
-        if (results.length > 0) {
-          date = results[0].date();
-
-          // 如果是週期性任務，確保時間是未來的
-          if (json.rule && (json.rule.startsWith('daily') || json.rule.startsWith('weekly:') || json.rule.startsWith('monthly:') || json.rule.startsWith('yearly:'))) {
-            if (date.getTime() <= refDate.getTime()) {
-              // 如果日期已過，根據規則類型計算下一個日期
-              if (json.rule.startsWith('yearly:')) {
-                date.setFullYear(date.getFullYear() + 1);
-              } else if (json.rule.startsWith('monthly:')) {
-                date.setMonth(date.getMonth() + 1);
-              } else if (json.rule.startsWith('weekly:')) {
-                date.setDate(date.getDate() + 7);
-              } else if (json.rule === 'daily') {
-                date.setDate(date.getDate() + 1);
-              }
+        // 處理 "today HH:MM" 格式
+        if (json.time.includes('today')) {
+          const timeMatch = json.time.match(/today\s*(\d{1,2}):(\d{2})/);
+          if (timeMatch) {
+            const [, hour, minute] = timeMatch;
+            parsedDate = new Date(refDate);
+            parsedDate.setHours(parseInt(hour), parseInt(minute), 0, 0);
+          } else {
+            parsedDate = new Date(refDate);
+            parsedDate.setHours(0, 0, 0, 0);
+          }
+        }
+        // 處理 "tomorrow HH:MM" 格式
+        else if (json.time.includes('tomorrow')) {
+          const timeMatch = json.time.match(/tomorrow\s*(\d{1,2}):(\d{2})/);
+          if (timeMatch) {
+            const [, hour, minute] = timeMatch;
+            parsedDate = new Date(refDate);
+            parsedDate.setDate(parsedDate.getDate() + 1);
+            parsedDate.setHours(parseInt(hour), parseInt(minute), 0, 0);
+          } else {
+            parsedDate = new Date(refDate);
+            parsedDate.setDate(parsedDate.getDate() + 1);
+            parsedDate.setHours(0, 0, 0, 0);
+          }
+        }
+        // 處理 "in N days HH:MM" 格式
+        else if (json.time.includes('in ') && json.time.includes(' days')) {
+          const dayMatch = json.time.match(/in (\d+) days/);
+          const timeMatch = json.time.match(/(\d{1,2}):(\d{2})/);
+          if (dayMatch) {
+            const days = parseInt(dayMatch[1]);
+            parsedDate = new Date(refDate);
+            parsedDate.setDate(parsedDate.getDate() + days);
+            if (timeMatch) {
+              const [, hour, minute] = timeMatch;
+              parsedDate.setHours(parseInt(hour), parseInt(minute), 0, 0);
+            } else {
+              parsedDate.setHours(0, 0, 0, 0);
             }
           }
-        } else {
-          // 如果 chrono 無法解析，嘗試直接解析 ISO 時間
-          // 或者嘗試解析中文時間表達
-          date = new Date(json.time);
+        }
+        // 處理 "今天 HH:MM" 格式（保留對中文的支持）
+        else if (json.time.includes('今天')) {
+          const timeMatch = json.time.match(/今天\s*(\d{1,2}):(\d{2})/);
+          if (timeMatch) {
+            const [, hour, minute] = timeMatch;
+            parsedDate = new Date(refDate);
+            parsedDate.setHours(parseInt(hour), parseInt(minute), 0, 0);
+          } else {
+            parsedDate = new Date(refDate);
+            parsedDate.setHours(0, 0, 0, 0);
+          }
+        }
+        // 處理 "明天 HH:MM" 格式（保留對中文的支持）
+        else if (json.time.includes('明天')) {
+          const timeMatch = json.time.match(/明天\s*(\d{1,2}):(\d{2})/);
+          if (timeMatch) {
+            const [, hour, minute] = timeMatch;
+            parsedDate = new Date(refDate);
+            parsedDate.setDate(parsedDate.getDate() + 1);
+            parsedDate.setHours(parseInt(hour), parseInt(minute), 0, 0);
+          } else {
+            parsedDate = new Date(refDate);
+            parsedDate.setDate(parsedDate.getDate() + 1);
+            parsedDate.setHours(0, 0, 0, 0);
+          }
+        }
+        // 處理 "N天後 HH:MM" 格式（保留對中文的支持）
+        else if (json.time.includes('天後')) {
+          const dayMatch = json.time.match(/(\d+)天後/);
+          const timeMatch = json.time.match(/(\d{1,2}):(\d{2})/);
+          if (dayMatch) {
+            const days = parseInt(dayMatch[1]);
+            parsedDate = new Date(refDate);
+            parsedDate.setDate(parsedDate.getDate() + days);
+            if (timeMatch) {
+              const [, hour, minute] = timeMatch;
+              parsedDate.setHours(parseInt(hour), parseInt(minute), 0, 0);
+            } else {
+              parsedDate.setHours(0, 0, 0, 0);
+            }
+          }
+        }
+        // 處理純時間格式如 "20:58", "21:00" 等
+        else if (/^\d{1,2}:\d{2}$/.test(json.time.trim())) {
+          const [hour, minute] = json.time.trim().split(':').map(Number);
+          parsedDate = new Date(refDate);
+          parsedDate.setHours(hour, minute, 0, 0);
 
-          if (isNaN(date.getTime())) {
-             // 時間解析失敗，拋出錯誤供使用者排查
-             throw new Error(`時間格式無效 (Invalid Date): ${json.time}`);
+          // 如果時間已過，則設為明天
+          if (parsedDate.getTime() < refDate.getTime()) {
+            parsedDate.setDate(parsedDate.getDate() + 1);
+          }
+        }
+        // 如果以上格式都不匹配，使用 chrono 解析（現在會更好地處理英文）
+        else {
+          const results = chrono.parse(json.time, refDate, { forwardDate: true });
+
+          if (results.length > 0) {
+            parsedDate = results[0].date();
+          } else {
+            // 如果 chrono 無法解析，嘗試直接解析
+            parsedDate = new Date(json.time);
+          }
+        }
+
+        if (parsedDate && !isNaN(parsedDate.getTime())) {
+          date = parsedDate;
+        } else {
+          throw new Error(`時間格式無效 (Invalid Date): ${json.time}`);
+        }
+      }
+
+      // 如果是週期性任務，確保時間是未來的
+      if (json.rule && (json.rule.startsWith('daily') || json.rule.startsWith('weekly:') || json.rule.startsWith('monthly:') || json.rule.startsWith('yearly:'))) {
+        if (date.getTime() <= refDate.getTime()) {
+          // 如果日期已過，根據規則類型計算下一個日期
+          if (json.rule.startsWith('yearly:')) {
+            date.setFullYear(date.getFullYear() + 1);
+          } else if (json.rule.startsWith('monthly:')) {
+            date.setMonth(date.getMonth() + 1);
+          } else if (json.rule.startsWith('weekly:')) {
+            date.setDate(date.getDate() + 7);
+          } else if (json.rule === 'daily') {
+            date.setDate(date.getDate() + 1);
           }
         }
       }
