@@ -154,9 +154,13 @@ async function sendConfirmation(ctx, state) {
 
   const ruleText = state.cronRule ? translateRule(state.cronRule) : "單次";
 
+  // Store the original input text in the callback data for re-judgment
+  // We'll use a simplified approach by storing the task name for now
   const kb = new InlineKeyboard()
     .text("✅ 確認儲存", `sv|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`)
-    .text("❌ 取消", "cancel");
+    .text("❌ 取消", "cancel")
+    .row()
+    .text("🤖 AI重新判斷", `rejudge|${encodeURIComponent(state.originalText || state.task) || ''}|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`);
 
   let msg = `📌 <b>任務確認</b>\n` +
             `📝 內容：${state.task}\n` +

@@ -32,7 +32,8 @@ async function handleMessage(ctx, env) {
     remindAt: local.utcTimestamp,
     cronRule: null,
     allDay: 0,
-    source: '⚡ 本地快速解析'
+    source: '⚡ 本地快速解析',
+    originalText: text // Store the original input text for re-judgment
   });
 }
 
@@ -306,6 +307,7 @@ async function processTaskWithAI(ctx, env, text) {
       cronRule: finalRule,
       allDay: json.isAllDay ? 1 : 0,
       source: '🧠 AI',
+      originalText: text, // Store the original input text for re-judgment
       debugRaw: JSON.stringify(json) // 傳送原始 JSON 給確認函式顯示
     });
 
@@ -389,7 +391,19 @@ async function handleCallbackQuery(ctx, env) {
       await addTodo(env, userId, taskName, ts, rule, allDay);
       return ctx.editMessageText(`✅ 已儲存任務：<b>${taskName}</b>`, { parse_mode: "HTML" });
     } catch (e) {
-      return ctx.editMessageText(`❌ 資料庫錯誤：${e.message}`);
+      return ctx.editMessageText(`❌ 資庫錯誤：${e.message}`);
+    }
+  }
+
+  // AI重新判斷邏輯
+  if (data.startsWith("rejudge|")) {
+    const parts = data.split("|");
+    if (parts.length >= 2) {
+      // Decode the original input text from the callback data
+      const originalInputText = decodeURIComponent(parts[1]);
+
+      // 重新調用AI處理原始輸入文本
+      return await processTaskWithAI(ctx, env, originalInputText);
     }
   }
 
