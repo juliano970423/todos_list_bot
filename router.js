@@ -38,8 +38,14 @@ async function handleMessage(ctx, env) {
 }
 
 // --- 2. AI 處理核心 (包含詳細錯誤回報) ---
-async function processTaskWithAI(ctx, env, text) {
-  const waitMsg = await ctx.reply("🤖 正在思考與解析...");
+async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
+  let waitMsg;
+
+  // Only send wait message if this is not a re-judgment (called from callback)
+  if (!isRejudgment) {
+    waitMsg = await ctx.reply("🤖 正在思考與解析...");
+  }
+
   const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
 
   try {
@@ -298,7 +304,10 @@ async function processTaskWithAI(ctx, env, text) {
       }
     }
 
-    await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
+    // Handle deletion of wait message based on context
+    if (!isRejudgment && waitMsg) {
+      await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
+    }
 
     // 發送確認訊息，並附帶 "除錯資訊" (因為您要求更多資訊)
     await sendConfirmation(ctx, {
@@ -306,7 +315,7 @@ async function processTaskWithAI(ctx, env, text) {
       remindAt: remindTs,
       cronRule: finalRule,
       allDay: json.isAllDay ? 1 : 0,
-      source: '🧠 AI',
+      source: isRejudgment ? '🧠 AI (重新判斷)' : '🧠 AI',
       originalText: text, // Store the original input text for re-judgment
       debugRaw: JSON.stringify(json) // 傳送原始 JSON 給確認函式顯示
     });
@@ -318,7 +327,16 @@ async function processTaskWithAI(ctx, env, text) {
                      `❌ <b>錯誤原因：</b> ${e.message}\n` +
                      `📄 <b>原始回應：</b>\n<pre>${e.rawContent || "無內容"}</pre>`;
 
-    await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, errorMsg, { parse_mode: "HTML" });
+    // Handle error message based on context
+    if (isRejudgment) {
+      // If this is a re-judgment from callback, edit the current message
+      await ctx.editMessageText(errorMsg, { parse_mode: "HTML" });
+    } else {
+      // Otherwise, edit the wait message
+      if (waitMsg) {
+        await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, errorMsg, { parse_mode: "HTML" });
+      }
+    }
   }
 }
 
@@ -402,8 +420,14 @@ async function handleCallbackQuery(ctx, env) {
       // Decode the original input text from the callback data
       const originalInputText = decodeURIComponent(parts[1]);
 
-      // 重新調用AI處理原始輸入文本
-      return await processTaskWithAI(ctx, env, originalInputText);
+      // Answer the callback query to prevent timeout
+      await ctx.answerCallbackQuery("正在重新分析...");
+
+      // Edit the message to show processing status
+      await ctx.editMessageText("🤖 正在重新分析您的請求...");
+
+      // Process the original text again with AI
+      return await processTaskWithAI(ctx, env, originalInputText, true); // Pass flag indicating this is a re-judgment
     }
   }
 
