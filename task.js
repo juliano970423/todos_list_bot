@@ -154,13 +154,14 @@ async function sendConfirmation(ctx, state) {
 
   const ruleText = state.cronRule ? translateRule(state.cronRule) : "單次";
 
-  // Store the original input text in the callback data for re-judgment
-  // We'll use a simplified approach by storing the task name for now
+  // 使用簡化的任務內容作為重新判斷的輸入，限制長度以符合Telegram回調數據限制
+  const taskForCallback = (state.originalText || state.task).substring(0, 30).replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_');
+
   const kb = new InlineKeyboard()
     .text("✅ 確認儲存", `sv|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`)
     .text("❌ 取消", "cancel")
     .row()
-    .text("🤖 AI重新判斷", `rejudge|${encodeURIComponent(state.originalText || state.task) || ''}|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`);
+    .text("🤖 AI重新判斷", `rejudge|${taskForCallback}|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`);
 
   let msg = `📌 <b>任務確認</b>\n` +
             `📝 內容：${state.task}\n` +

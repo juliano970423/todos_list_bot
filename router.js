@@ -417,8 +417,10 @@ async function handleCallbackQuery(ctx, env) {
   if (data.startsWith("rejudge|")) {
     const parts = data.split("|");
     if (parts.length >= 2) {
-      // Decode the original input text from the callback data
-      const originalInputText = decodeURIComponent(parts[1]);
+      // 從按鈕數據中獲取任務內容
+      let taskContent = parts[1] || "未命名任務";
+      // 將底線轉換回空格以便更好地解析
+      taskContent = taskContent.replace(/_/g, ' ');
 
       // Answer the callback query to prevent timeout
       await ctx.answerCallbackQuery("正在重新分析...");
@@ -426,8 +428,8 @@ async function handleCallbackQuery(ctx, env) {
       // Edit the message to show processing status
       await ctx.editMessageText("🤖 正在重新分析您的請求...");
 
-      // Process the original text again with AI
-      return await processTaskWithAI(ctx, env, originalInputText, true); // Pass flag indicating this is a re-judgment
+      // Process the task content again with AI
+      return await processTaskWithAI(ctx, env, taskContent, true); // Pass flag indicating this is a re-judgment
     }
   }
 
