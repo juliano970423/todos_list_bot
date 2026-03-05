@@ -50,6 +50,11 @@ async function deleteTodosByIds(env, ids, userId) {
   await env.DB.prepare(`DELETE FROM todos WHERE id IN (${placeholders}) AND user_id = ?`).bind(...ids, userId).run();
 }
 
+// 刪除指定狀態的待辦
+async function deleteTodosByStatus(env, userId, status) {
+  await env.DB.prepare("DELETE FROM todos WHERE user_id = ? AND status = ?").bind(userId, status).run();
+}
+
 // 更新循環任務的下次提醒時間
 async function updateCronTodoNextTime(env, todoId, nextTs) {
   await env.DB.prepare("UPDATE todos SET remind_at = ? WHERE id = ?").bind(nextTs, todoId).run();
@@ -67,6 +72,7 @@ export {
   getTodosByTimeRange,
   updateTodoStatus,
   deleteTodosByIds,
+  deleteTodosByStatus,
   updateCronTodoNextTime,
   addHistory
 };

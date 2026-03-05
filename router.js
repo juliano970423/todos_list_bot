@@ -343,6 +343,18 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
 // --- 3. 查詢處理 (List/History) ---
 async function handleQuery(ctx, env, text, mode) {
   const queryText = text.replace(/^\/(list|history)\s*/, "").trim();
+
+  // 新增 history 清空功能
+  if (mode === "history" && queryText.toLowerCase() === "clear") {
+    const userId = ctx.from.id.toString();
+    try {
+      await deleteTodosByStatus(env, userId, 1); // 刪除 status=1 的歷史記錄
+      return await ctx.reply("🗑️ 已清空所有歷史記錄。", { parse_mode: "HTML" });
+    } catch (e) {
+      return await ctx.reply(`❌ 清空歷史記錄失敗：${e.message}`, { parse_mode: "HTML" });
+    }
+  }
+
   if (!queryText) {
       if (mode === "list") {
           // 無參數時顯示最近一週的任務
@@ -357,6 +369,47 @@ async function handleQuery(ctx, env, text, mode) {
       }
   }
 
+  // 特殊處理例行性任務查詢
+  if (queryText.toLowerCase().includes('例行') ||
+      queryText.toLowerCase().includes('重複') ||
+      queryText.toLowerCase().includes('每') ||
+      queryText.toLowerCase().includes('daily') ||
+      queryText.toLowerCase().includes('weekly') ||
+      queryText.toLowerCase().includes('monthly') ||
+      queryText.toLowerCase().includes('yearly')) {
+
+    // 直接獲取所有週期性任務
+    const userId = ctx.from.id.toString();
+    const results = await getTodos(env, userId, 0);
+    const recurringTasks = results.filter(t => t.cron_rule && t.cron_rule !== 'none' && t.cron_rule !== null);
+
+    if (recurringTasks.length === 0) {
+      return await ctx.reply(`📋 <b>例行性任務清單：</b>\n📭 目前無例行性任務。`, { parse_mode: "HTML" });
+    }
+
+    let msg = `📋 <b>例行性任務清單：</b>\n`;
+    recurringTasks.forEach((t, i) => {
+      let timeDisplay = "";
+
+      if (t.remind_at > 0) {
+        if (t.all_day) {
+          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
+        } else {
+          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false}) + ` (${translateRule(t.cron_rule)})`;
+        }
+      } else {
+        timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
+      }
+
+      msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
+    });
+
+    return await ctx.reply(msg, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text("🗑️ 管理模式", "manage_mode")
+    });
+  }
+
   const waitMsg = await ctx.reply("🔍 查詢範圍中...");
   const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
 
@@ -369,25 +422,21 @@ async function handleQuery(ctx, env, text, mode) {
     if (mode === "list") await renderList(ctx, env, json.label, json.start, json.end, json);
     else await renderHistory(ctx, env, json.label, json.start, json.end);
   } catch (e) {
-    // 如果是 JSON 解析錯誤，嘗試從原始回應中提取 JSON 部分
-    if (e.message.includes("JSON") && e.rawContent) {
-      try {
-        // 尋找 JSON 部分
-        const jsonMatch = e.rawContent.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const jsonStr = jsonMatch[0];
-          const json = JSON.parse(jsonStr);
+    // 加強錯誤處理：不再重複嘗試解析，直接報錯
+    console.error("AI Query Error:", e);
 
-          if (mode === "list") await renderList(ctx, env, json.label, json.start, json.end);
-          else await renderHistory(ctx, env, json.label, json.start, json.end);
-          return;
-        }
-      } catch (parseErr) {
-        // 如果仍然解析失敗，顯示錯誤
-      }
+    // 直接返回錯誤訊息，不再嘗試從原始回應中提取 JSON
+    const errorMsg = `❌ <b>查詢解析失敗</b>\n\n` +
+                     `• 錯誤原因：${e.message}\n` +
+                     `• 原始回應：${e.rawContent ? '有內容' : '無內容'}\n` +
+                     `• 請嘗試使用更明確的時間描述，例如："今天"、"明天"、"本週"等`;
+
+    // 如果是 re-judgment context，編輯當前訊息；否則編輯等待訊息
+    if (waitMsg) {
+      await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, errorMsg, { parse_mode: "HTML" });
+    } else {
+      await ctx.reply(errorMsg, { parse_mode: "HTML" });
     }
-
-    await ctx.reply(`❌ 查詢範圍解析失敗：${e.message}\n原始回應：${e.rawContent || "null"}`);
   }
 }
 

@@ -114,7 +114,7 @@ async function callAI(env, prompt) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: "nova-micro", // 或 "gpt-4o-mini"
+        model: "nova-fast", // 或 "gpt-4o-mini"
         messages: [{ role: "user", content: prompt }],
         jsonMode: true
       }),
@@ -131,12 +131,19 @@ async function callAI(env, prompt) {
 
     // 嘗試清理 Markdown
     const cleanContent = rawContent.replace(/```json|```/g, "").trim();
+
+    // 直接解析 JSON，不再重試
     const json = JSON.parse(cleanContent);
 
     return { json, rawContent }; // 回傳物件和原始字串
   } catch (e) {
+    // 加強錯誤處理：不再重試，直接報錯
+    console.error("AI API Call Error:", e);
+
     // 將原始回應附加在 error 物件上，方便外層 catch 使用
     e.rawContent = rawContent;
+
+    // 直接拋出錯誤，不進行任何重試
     throw e;
   }
 }

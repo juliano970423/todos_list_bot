@@ -6,7 +6,7 @@ import { calculateNext } from "./time.js";
 
 // 翻譯規則顯示文字
 function translateRule(rule) {
-    if (!rule || rule === 'none') return "單次";
+    if (!rule || rule === 'none' || rule === 'null') return "單次";
     if (rule === 'daily') return "每天";
     if (rule.startsWith('weekly:')) {
         const days = rule.split(':')[1];
@@ -26,6 +26,9 @@ function translateRule(rule) {
     }
     if (rule.startsWith('monthly:')) return "每月";
     if (rule.startsWith('yearly:')) return "每年";
+    // 支援更多關鍵字
+    if (rule.includes('every')) return "每";
+    if (rule.includes('each')) return "每";
     return rule;
 }
 
@@ -33,6 +36,35 @@ function translateRule(rule) {
 async function renderList(ctx, env, label, startTs = null, endTs = null, aiResult = null) {
   const userId = ctx.from.id.toString();
   const results = await getTodos(env, userId, 0);
+
+  // 如果是例行性任務查詢，直接返回所有週期性任務
+  if (label === "例行性任務清單") {
+    const recurringTasks = results.filter(t => t.cron_rule && t.cron_rule !== 'none' && t.cron_rule !== null);
+
+    if (!recurringTasks.length) return ctx.reply(`📋 <b>${label}</b>\n📭 目前無例行性任務。`, { parse_mode: "HTML" });
+
+    let msg = `📋 <b>${label}</b>\n`;
+    recurringTasks.forEach((t, i) => {
+      let timeDisplay = "";
+
+      if (t.remind_at > 0) {
+        if (t.all_day) {
+          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
+        } else {
+          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false}) + ` (${translateRule(t.cron_rule)})`;
+        }
+      } else {
+        timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
+      }
+
+      msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
+    });
+
+    return await ctx.reply(msg, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text("🗑️ 管理模式", "manage_mode")
+    });
+  }
 
   const start = startTs || Math.floor(new Date().setHours(0,0,0,0)/1000);
   const end = endTs || Math.floor(new Date().setHours(23,59,59,999)/1000);
@@ -47,19 +79,19 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         const startDate = new Date(start * 1000);
         const endDate = new Date(end * 1000);
 
-        // 遍歷時間範圍內的每一天，檢查是否有符合規則的日期
+        // 遍歷時間範圍內的每一天
         let currentDate = new Date(startDate);
         while (currentDate <= endDate) {
-          const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay(); // Convert to ISO (1 for Mon, ..., 7 for Sun)
+          const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay(); // Convert to ISO
           if (days.includes(dayOfWeekISO)) {
-            return true; // 如果時間範圍內有符合規則的日期，則顯示此任務
+            return true;
           }
-          currentDate.setDate(currentDate.getDate() + 1); // 移動到下一天
+          currentDate.setDate(currentDate.getDate() + 1);
         }
-        return false; // 時間範圍內沒有符合規則的日期
+        return false;
       }
-      // daily 週期性任務在任何時間範圍內都顯示
-      return t.cron_rule === 'daily';
+      // daily/weekly/monthly/yearly 週期性任務在任何時間範圍內都顯示
+      return true;
     }
     return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
   });
@@ -71,20 +103,16 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     let timeDisplay = "";
 
     if (t.cron_rule) {
-      // 對於週期性任務，顯示具體時間後加上週期條件
       if (t.remind_at > 0) {
         if (t.all_day) {
-          // 對於全天的週期任務，顯示日期和週期條件
           timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
         } else {
           timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false}) + ` (${translateRule(t.cron_rule)})`;
         }
       } else {
-        // 如果沒有具體時間，顯示週期條件
         timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
       }
     } else if (t.all_day) {
-      // 對於全天任務，只顯示日期
       timeDisplay = "☀️ " + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)";
     } else if (t.remind_at !== -1) {
       timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
@@ -94,7 +122,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
     msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
   });
-  // 如果有 AI 解析結果，添加到消息末尾
+  // 如果有 AI 解析結果
   if (aiResult) {
     msg += `\n\n🔍 <b>AI 解析結果：</b>\n`;
     msg += `<code>標籤: ${aiResult.label || 'N/A'}`;
@@ -113,14 +141,21 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
   const userId = ctx.from.id.toString();
   let results;
-  
+
   if (startTs && endTs) {
     results = await getTodosByTimeRange(env, userId, startTs, endTs, 1);
   } else {
     results = await getTodos(env, userId, 1);
   }
 
-  if (!results.length) return ctx.reply(`📚 ${label} 無完成紀錄。`);
+  if (!results.length) {
+    // 如果是清空操作後的查詢
+    if (label === "最近" && startTs === null && endTs === null) {
+      return ctx.reply(`📚 ${label} 無完成紀錄。`, { parse_mode: "HTML" });
+    }
+    return ctx.reply(`📚 ${label} 無完成紀錄。`, { parse_mode: "HTML" });
+  }
+
   let msg = `📚 <b>${label} 完成紀錄：</b>\n`;
   // 按提醒時間從近到遠排序（最近的在前）
   results.sort((a, b) => b.remind_at - a.remind_at);
