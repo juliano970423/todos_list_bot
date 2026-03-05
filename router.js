@@ -16,12 +16,12 @@ async function handleMessage(ctx, env) {
 
   // 判斷是否需要 AI (包含複雜關鍵字)
   // 增加關鍵字覆蓋率，確保 "提醒我..." 這種句子會進 AI
-  const forceAI = /每|到|週|月|年|every|daily|week|month|year|remind|提醒|記得|幫我/i.test(text);
+  const forceAI = /每 | 到|週 | 月|年|every|daily|week|month|year|remind|提醒 | 記得 | 幫我/i.test(text);
 
   // 嘗試本地解析 (Chrono) 作為備案或簡單句處理
   const local = parseTimeLocally(text);
 
-  // 如果有複雜關鍵字，或是本地解析不出具體時間(或者解析失敗)，就丟給 AI
+  // 如果有複雜關鍵字，或是本地解析不出具體時間 (或者解析失敗)，就丟給 AI
   if (forceAI || !local) {
     return await processTaskWithAI(ctx, env, text);
   }
@@ -153,9 +153,9 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
             parsedDate.setHours(0, 0, 0, 0);
           }
         }
-        // 處理 "N天後 HH:MM" 格式（保留對中文的支持）
+        // 處理 "N 天後 HH:MM" 格式（保留對中文的支持）
         else if (json.time.includes('天後')) {
-          const dayMatch = json.time.match(/(\d+)天後/);
+          const dayMatch = json.time.match(/(\d+) 天後/);
           const timeMatch = json.time.match(/(\d{1,2}):(\d{2})/);
           if (dayMatch) {
             const days = parseInt(dayMatch[1]);
@@ -263,7 +263,7 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
         const currentMonth = refDate.getMonth();
         const currentDay = refDate.getDate();
 
-        date.setMonth(month - 1); // 月份從0開始
+        date.setMonth(month - 1); // 月份從 0 開始
         date.setDate(day);
 
         // 如果今年的日期已過，則設為明年
@@ -280,7 +280,7 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
     let finalTask = json.task;
     if (!finalTask || finalTask === "未命名任務" || finalTask.trim() === "") {
         // 嘗試移除常見的觸發詞，保留剩餘部分
-        finalTask = text.replace(/提醒我|記得|每週|每天/g, "").trim();
+        finalTask = text.replace(/提醒我 | 記得 | 每週 | 每天/g, "").trim();
     }
 
     // 處理規則 (過濾 none/null 字串)
@@ -360,7 +360,7 @@ async function handleQuery(ctx, env, text, mode) {
           // 無參數時顯示最近一週的任務
           const now = new Date();
           const startOfWeek = new Date(now);
-          startOfWeek.setDate(now.getDate() - 7); // 最近7天
+          startOfWeek.setDate(now.getDate() - 7); // 最近 7 天
           const startTs = Math.floor(startOfWeek.setHours(0,0,0,0)/1000);
           const endTs = Math.floor(new Date().setHours(23,59,59,999)/1000);
           return await renderList(ctx, env, "近期", startTs, endTs, null);
@@ -422,14 +422,14 @@ async function handleQuery(ctx, env, text, mode) {
     if (mode === "list") await renderList(ctx, env, json.label, json.start, json.end, json);
     else await renderHistory(ctx, env, json.label, json.start, json.end);
   } catch (e) {
-    // 加強錯誤處理：不再重複嘗試解析，直接報錯
+    // 直接報告錯誤，不進行任何包裝
     console.error("AI Query Error:", e);
 
-    // 直接返回錯誤訊息，不再嘗試從原始回應中提取 JSON
-    const errorMsg = `❌ <b>查詢解析失敗</b>\n\n` +
-                     `• 錯誤原因：${e.message}\n` +
-                     `• 原始回應：${e.rawContent ? '有內容' : '無內容'}\n` +
-                     `• 請嘗試使用更明確的時間描述，例如："今天"、"明天"、"本週"等`;
+    // 直接顯示原始錯誤資訊（技術性）
+    const errorMsg = `❌ ERROR\n\n` +
+                     `<code>${e.name}: ${e.message}</code>\n` +
+                     `${e.stack ? `\nStack:\n<code>${e.stack}</code>` : ''}\n` +
+                     `${e.rawContent ? `\nRaw response (first 200 chars):\n<code>${e.rawContent.substring(0, 200)}</code>` : ''}`;
 
     // 如果是 re-judgment context，編輯當前訊息；否則編輯等待訊息
     if (waitMsg) {
@@ -462,14 +462,13 @@ async function handleCallbackQuery(ctx, env) {
     }
   }
 
-  // AI重新判斷邏輯
+  // AI 重新判斷邏輯
   if (data.startsWith("rejudge|")) {
     const parts = data.split("|");
     if (parts.length >= 2) {
-      // 從按鈕數據中獲取任務內容
-      let taskContent = parts[1] || "未命名任務";
-      // 將底線轉換回空格以便更好地解析
-      taskContent = taskContent.replace(/_/g, ' ');
+      // 從原始訊息中獲取完整的任務內容（因為按鈕數據已被截斷）
+      const match = ctx.callbackQuery.message.text.match(/內容：(.+?)\n/);
+      const taskContent = match ? match[1].trim() : "未命名任務";
 
       // Answer the callback query to prevent timeout
       await ctx.answerCallbackQuery("正在重新分析...");

@@ -126,24 +126,56 @@ async function callAI(env, prompt) {
        throw new Error(`API Status ${res.status}: ${errText}`);
     }
 
-    const data = await res.json();
-    rawContent = data.choices[0].message.content; // 保存原始回應
+    // 先檢查 response 是否為空
+    const text = await res.text();
+    if (!text || text.trim() === "") {
+      throw new Error("API returned empty response");
+    }
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (parseError) {
+      throw new Error(`Failed to parse JSON response: ${parseError.message}. Raw response: ${text.substring(0, 200)}...`);
+    }
+
+    // 檢查 data 結構是否正確
+    if (!data || !data.choices || data.choices.length === 0) {
+      throw new Error(`Invalid API response structure: missing choices array. Response: ${JSON.stringify(data).substring(0, 200)}...`);
+    }
+
+    rawContent = data.choices[0].message?.content || ""; // 保存原始回應
+
+    // 檢查 rawContent 是否為空
+    if (!rawContent || rawContent.trim() === "") {
+      throw new Error("AI returned empty content");
+    }
 
     // 嘗試清理 Markdown
     const cleanContent = rawContent.replace(/```json|```/g, "").trim();
 
+    // 檢查 cleanContent 是否為空
+    if (!cleanContent || cleanContent.trim() === "") {
+      throw new Error("Cleaned content is empty after removing Markdown");
+    }
+
     // 直接解析 JSON，不再重試
-    const json = JSON.parse(cleanContent);
+    let json;
+    try {
+      json = JSON.parse(cleanContent);
+    } catch (parseError) {
+      throw new Error(`Failed to parse JSON from AI response: ${parseError.message}. Cleaned content: ${cleanContent.substring(0, 200)}...`);
+    }
 
     return { json, rawContent }; // 回傳物件和原始字串
   } catch (e) {
     // 加強錯誤處理：不再重試，直接報錯
     console.error("AI API Call Error:", e);
 
-    // 將原始回應附加在 error 物件上，方便外層 catch 使用
+    // 將原始回應附加在 error 物件上
     e.rawContent = rawContent;
 
-    // 直接拋出錯誤，不進行任何重試
+    // 直接拋出錯誤
     throw e;
   }
 }
