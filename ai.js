@@ -321,7 +321,12 @@ function parseQueryLocally(queryText) {
 
     if (targetDay !== undefined) {
       const currentDayOfWeek = today.getDay();
-      const daysUntilNextWeek = 7 - currentDayOfWeek + targetDay;
+      // 計算到下週的指定星期幾的天數
+      // 方法：先計算到本週結束的天數，再加上目標星期幾
+      const daysUntilEndOfWeek = 7 - currentDayOfWeek;
+      // 如果今天是週日（0），那么 daysUntilEndOfWeek = 7
+      // 否则 daysUntilEndOfWeek = 7 - currentDayOfWeek
+      const daysUntilNextWeek = (currentDayOfWeek === 0 ? 7 : daysUntilEndOfWeek) + targetDay;
       const nextWeekday = new Date(today);
       nextWeekday.setDate(today.getDate() + daysUntilNextWeek);
       const nextWeekdayStartTs = Math.floor((nextWeekday.getTime() - TAIPEI_OFFSET * 60000) / 1000);

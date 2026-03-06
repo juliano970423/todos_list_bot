@@ -74,11 +74,11 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
       // 對於週期性任務，需要檢查在指定時間範圍內是否有符合規則的日期
       if (t.cron_rule.startsWith('weekly:')) {
         const days = t.cron_rule.split(':')[1].split(',').map(Number);
-
+  
         // 檢查時間範圍內是否有符合週期規則的日期
         const startDate = new Date(start * 1000);
         const endDate = new Date(end * 1000);
-
+  
         // 遍歷時間範圍內的每一天
         let currentDate = new Date(startDate);
         while (currentDate <= endDate) {
@@ -90,12 +90,44 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         }
         return false;
       }
-      // daily/weekly/monthly/yearly 週期性任務在任何時間範圍內都顯示
-      return true;
+      // daily 任務：每天都顯示
+      if (t.cron_rule === 'daily') {
+        return true;
+      }
+      // monthly 任務：檢查時間範圍內是否有符合月份規則的日期
+      if (t.cron_rule.startsWith('monthly:')) {
+        const dayOfMonth = parseInt(t.cron_rule.split(':')[1]);
+        const startDate = new Date(start * 1000);
+        const endDate = new Date(end * 1000);
+        let currentDate = new Date(startDate);
+        while (currentDate <= endDate) {
+          if (currentDate.getDate() === dayOfMonth) {
+            return true;
+          }
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+        return false;
+      }
+      // yearly 任務：檢查時間範圍內是否有符合年份規則的日期
+      if (t.cron_rule.startsWith('yearly:')) {
+        const monthDay = t.cron_rule.split(':')[1]; // 格式為 MM-DD
+        const [month, day] = monthDay.split('-').map(Number);
+        const startDate = new Date(start * 1000);
+        const endDate = new Date(end * 1000);
+        let currentDate = new Date(startDate);
+        while (currentDate <= endDate) {
+          if (currentDate.getMonth() + 1 === month && currentDate.getDate() === day) {
+            return true;
+          }
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+        return false;
+      }
+      // 其他未定義的週期性任務不顯示
+      return false;
     }
     return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
   });
-
   if (!filtered.length) return ctx.reply(`📭 ${label} 沒有待辦事項。`);
 
   let msg = `📋 <b>${label} 任務清單：</b>\n`;
@@ -122,12 +154,27 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
     msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
   });
-  // 如果有 AI 解析結果
-  if (aiResult) {
-    msg += `\n\n🔍 <b>AI 解析結果：</b>\n`;
-    msg += `<code>標籤：${aiResult.label || 'N/A'}`;
-    if (aiResult.start !== undefined) msg += `\n開始時間：${new Date(aiResult.start * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} (${aiResult.start})`;
-    if (aiResult.end !== undefined) msg += `\n結束時間：${new Date(aiResult.end * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} (${aiResult.end})`;
+
+  // 如果有時間範圍信息（本地解析或 AI）
+  if (aiResult && (aiResult.source || aiResult.aiExtracted)) {
+    msg += `\n\n🔍 <b>查詢時間範圍：</b>\n`;
+    msg += `<code>標籤：${aiResult.label || label}\n`;
+    msg += `來源：${aiResult.source || 'N/A'}`;
+    if (aiResult.start !== undefined) {
+      msg += `\n開始：${new Date(aiResult.start * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} (${aiResult.start})`;
+    }
+    if (aiResult.end !== undefined) {
+      msg += `\n結束：${new Date(aiResult.end * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} (${aiResult.end})`;
+    }
+    if (aiResult.originalQuery) {
+      msg += `\n查詢：${aiResult.originalQuery}`;
+    }
+    if (aiResult.aiExtracted) {
+      msg += `\nAI 提取：${aiResult.aiExtracted}`;
+    }
+    if (aiResult.aiRaw) {
+      msg += `\nAI 原始回應：${aiResult.aiRaw.substring(0, 200)}...`;
+    }
     msg += '</code>';
   }
 

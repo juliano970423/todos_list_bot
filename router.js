@@ -419,7 +419,15 @@ async function handleQuery(ctx, env, text, mode) {
   if (localQuery) {
     // 本地解析成功，直接使用
     if (mode === "list") {
-      return await renderList(ctx, env, localQuery.label, localQuery.start, localQuery.end, null);
+      // 創建一個包含時間範圍信息的對象
+      const timeRangeInfo = {
+        label: localQuery.label,
+        start: localQuery.start,
+        end: localQuery.end,
+        source: '⚡ 本地快速解析',
+        originalQuery: queryText
+      };
+      return await renderList(ctx, env, localQuery.label, localQuery.start, localQuery.end, timeRangeInfo);
     } else {
       return await renderHistory(ctx, env, localQuery.label, localQuery.start, localQuery.end);
     }
@@ -431,7 +439,7 @@ async function handleQuery(ctx, env, text, mode) {
 
   try {
     const prompt = getQueryPrompt(queryText, now);
-    const { json } = await callAI(env, prompt);
+    const { json, rawContent } = await callAI(env, prompt);
 
     await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
 
@@ -440,7 +448,17 @@ async function handleQuery(ctx, env, text, mode) {
 
     if (parsedRange) {
       if (mode === "list") {
-        await renderList(ctx, env, json.label, parsedRange.start, parsedRange.end, null);
+        // 創建一個包含時間範圍信息的對象
+        const timeRangeInfo = {
+          label: json.label,
+          start: parsedRange.start,
+          end: parsedRange.end,
+          source: '🧠 AI 解析',
+          originalQuery: queryText,
+          aiExtracted: json.timeExpression,
+          aiRaw: rawContent
+        };
+        await renderList(ctx, env, json.label, parsedRange.start, parsedRange.end, timeRangeInfo);
       } else {
         await renderHistory(ctx, env, json.label, parsedRange.start, parsedRange.end);
       }
