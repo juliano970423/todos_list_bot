@@ -334,7 +334,10 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
     } else {
       // Otherwise, edit the wait message
       if (waitMsg) {
-        await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, errorMsg, { parse_mode: "HTML" });
+        await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, errorMsg, { parse_mode: "HTML" }).catch(() => {
+          // If editing fails (message doesn't exist), reply with a new message instead
+          ctx.reply(errorMsg, { parse_mode: "HTML" });
+        });
       }
     }
   }
