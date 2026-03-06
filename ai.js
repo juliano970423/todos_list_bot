@@ -80,15 +80,22 @@ Parse the user's natural language time description into a precise Unix timestamp
 # RULES
 1. TIMEZONE: Must use Asia/Taipei (UTC+8).
 2. DURATION LOGIC:
-   - "Today" or "今天": Start from 00:00:00 to 23:59:59.
+   - "Today" or "今天": Start from 00:00:00 to 23:59:59 of today.
+   - "Tomorrow" or "明天": Start from tomorrow 00:00:00 to 23:59:59.
    - "Yesterday" or "昨天": Start from previous day 00:00:00 to 23:59:59.
-   - "This Week" or "本週": Start from Monday 00:00:00 to Sunday 23:59:59.
+   - "Next X" or "下週X" (e.g., "下週一", "下週五", "next Friday", "next Monday"): Start from the specified day of NEXT week at 00:00:00 to 23:59:59. Calculate the next occurrence of that weekday.
+   - "This Week" or "本週": Start from Monday 00:00:00 to Sunday 23:59:59 of the current week.
+   - "Next Week" or "下週": Start from next Monday 00:00:00 to next Sunday 23:59:59.
    - Date ranges like "2025/12/27": Start from 00:00:00 to 23:59:59 on that day.
 3. OUTPUT: Strictly return a valid JSON object. No conversational filler or comments.
 4. LABEL LANGUAGE: The "label" field in the output must be in Chinese (中文), not English. Examples:
    - For "today" or "今天": label should be "今天"
+   - For "tomorrow" or "明天": label should be "明天"
    - For "yesterday" or "昨天": label should be "昨天"
+   - For "下週一" or "next Monday": label should be "下週一"
+   - For "下週五" or "next Friday": label should be "下週五"
    - For "this week" or "本週": label should be "本週"
+   - For "next week" or "下週": label should be "下週"
 
 # OUTPUT FORMAT (Return JSON only, no other text):
 {
