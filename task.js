@@ -79,18 +79,23 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         const startDate = new Date(start * 1000);
         const endDate = new Date(end * 1000);
   
+        console.log(`[DEBUG] 查詢週期性任務: ${t.task}, 規則: ${t.cron_rule}, 星期幾: ${days}`);
+        console.log(`[DEBUG] 時間範圍: ${start} (${startDate.toISOString()}) 到 ${end} (${endDate.toISOString()})`);
+  
         // 遍歷時間範圍內的每一天
         let currentDate = new Date(startDate);
         while (currentDate <= endDate) {
           const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay(); // Convert to ISO
+          console.log(`[DEBUG] 檢查日期: ${currentDate.toISOString()}, 星期幾: ${dayOfWeekISO}, 符合: ${days.includes(dayOfWeekISO)}`);
           if (days.includes(dayOfWeekISO)) {
+            console.log(`[DEBUG] ✓ 顯示任務: ${t.task}`);
             return true;
           }
           currentDate.setDate(currentDate.getDate() + 1);
         }
+        console.log(`[DEBUG] ✗ 不顯示任務: ${t.task}`);
         return false;
-      }
-      // daily 任務：每天都顯示
+      }      // daily 任務：每天都顯示
       if (t.cron_rule === 'daily') {
         return true;
       }

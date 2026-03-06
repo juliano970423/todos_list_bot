@@ -205,8 +205,12 @@ function parseQueryLocally(queryText) {
   const dayStartTs = Math.floor((today.getTime() - TAIPEI_OFFSET * 60000) / 1000);
   const dayEndTs = dayStartTs + 86400 - 1;
 
+  console.log(`[DEBUG parseQueryLocally] 查詢: "${queryText}"`);
+  console.log(`[DEBUG parseQueryLocally] 今天時間戳: ${dayStartTs} (${new Date(dayStartTs * 1000).toISOString()}) 到 ${dayEndTs} (${new Date(dayEndTs * 1000).toISOString()})`);
+
   // 處理 "今天"
   if (text === '今天' || text === 'today') {
+    console.log(`[DEBUG parseQueryLocally] 返回今天: ${dayStartTs} - ${dayEndTs}`);
     return {
       start: dayStartTs,
       end: dayEndTs,
