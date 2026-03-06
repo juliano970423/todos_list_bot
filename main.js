@@ -9,16 +9,6 @@ export default {
     const bot = new Bot(env.BOT_TOKEN);
     await bot.init(); // 初始化機器人
 
-    // --- 1. 訊息接收與分流 ---
-    bot.on("message:text", async (ctx) => {
-      await handleMessage(ctx, env);
-    });
-
-    // --- 7. Callback 互動處理 ---
-    bot.on("callback_query:data", async (ctx) => {
-      await handleCallbackQuery(ctx, env);
-    });
-
     // --- 新增: /help 指令處理 ---
     bot.command("help", async (ctx) => {
       const helpMessage = `📋 <b>待辦事項機器人使用說明</b>
@@ -53,6 +43,16 @@ export default {
 💡 小提示：如果AI解析結果不正確，可以點擊「AI重新判斷」按鈕讓AI重新分析！`;
 
       await ctx.reply(helpMessage, { parse_mode: "HTML" });
+    });
+
+    // --- 1. 訊息接收與分流 ---
+    bot.on("message:text", async (ctx) => {
+      await handleMessage(ctx, env);
+    });
+
+    // --- 7. Callback 互動處理 ---
+    bot.on("callback_query:data", async (ctx) => {
+      await handleCallbackQuery(ctx, env);
     });
 
     // 使用 Grammy 的 webhook 适配器
