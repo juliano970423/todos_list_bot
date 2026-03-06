@@ -466,22 +466,19 @@ async function handleCallbackQuery(ctx, env) {
   }
 
   // AI 重新判斷邏輯
-  if (data.startsWith("rejudge|")) {
-    const parts = data.split("|");
-    if (parts.length >= 2) {
-      // 從原始訊息中獲取完整的任務內容（因為按鈕數據已被截斷）
-      const match = ctx.callbackQuery.message.text.match(/內容：(.+?)\n/);
-      const taskContent = match ? match[1].trim() : "未命名任務";
+  if (data === "rejudge") {
+    // 從原始訊息中獲取完整的任務內容
+    const match = ctx.callbackQuery.message.text.match(/內容：(.+?)\n/);
+    const taskContent = match ? match[1].trim() : "未命名任務";
 
-      // Answer the callback query to prevent timeout
-      await ctx.answerCallbackQuery("正在重新分析...");
+    // Answer the callback query to prevent timeout
+    await ctx.answerCallbackQuery("正在重新分析...");
 
-      // Edit the message to show processing status
-      await ctx.editMessageText("🤖 正在重新分析您的請求...");
+    // Edit the message to show processing status
+    await ctx.editMessageText("🤖 正在重新分析您的請求...");
 
-      // Process the task content again with AI
-      return await processTaskWithAI(ctx, env, taskContent, true); // Pass flag indicating this is a re-judgment
-    }
+    // Process the task content again with AI
+    return await processTaskWithAI(ctx, env, taskContent, true); // Pass flag indicating this is a re-judgment
   }
 
   // 管理模式

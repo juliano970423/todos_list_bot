@@ -189,21 +189,15 @@ async function sendConfirmation(ctx, state) {
 
   const ruleText = state.cronRule ? translateRule(state.cronRule) : "單次";
 
-  // 使用簡化的任務內容作為重新判斷的輸入，限制長度以符合 Telegram 回調數據 64 位元組限制
-  // rejudge| 前綴佔 8 位元組，加上分隔符號，實際任務內容最多只能約 40-50 位元組
-  const taskForCallback = (state.originalText || state.task)
-    .substring(0, 20)  // 進一步縮短為 20 個字符
-    .replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '');  // 移除特殊字符而非替換，減少長度
-
-  // 構建回調數據並確保不超過 64 位元組
-  const callbackData = `rejudge|${taskForCallback}|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`;
-  const safeCallbackData = callbackData.length > 64 ? callbackData.substring(0, 64) : callbackData;
+  // 使用簡單的回調數據格式，避免超過 Telegram 的 64 位元組限制
+  // 實際任務內容會從訊息文本中提取（見 router.js 的 rejudge 處理）
+  const rejudgeCallback = "rejudge";
 
   const kb = new InlineKeyboard()
     .text("✅ 確認儲存", `sv|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`)
     .text("❌ 取消", "cancel")
     .row()
-    .text("🤖 AI 重新判斷", safeCallbackData);
+    .text("🤖 AI 重新判斷", rejudgeCallback);
 
   let msg = `📌 <b>任務確認</b>\n` +
             `📝 內容：${state.task}\n` +
