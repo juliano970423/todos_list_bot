@@ -1,7 +1,7 @@
 // router.js - 路由處理模組
 import { Bot, InlineKeyboard } from "grammy";
 import * as chrono from "chrono-node";
-import { getTaskPrompt, getQueryPrompt, callAI, parseTimeLocally } from "./ai.js";
+import { getTaskPrompt, getQueryPrompt, callAI, parseTimeLocally, parseQueryLocally } from "./ai.js";
 import { sendConfirmation, renderList, renderHistory } from "./task.js";
 import { addTodo, getTodos, deleteTodosByIds } from "./db.js";
 import { TAIPEI_OFFSET } from "./time.js";
@@ -413,6 +413,19 @@ async function handleQuery(ctx, env, text, mode) {
     });
   }
 
+  // 嘗試本地解析（混合架構）
+  const localQuery = parseQueryLocally(queryText);
+
+  if (localQuery) {
+    // 本地解析成功，直接使用
+    if (mode === "list") {
+      return await renderList(ctx, env, localQuery.label, localQuery.start, localQuery.end, null);
+    } else {
+      return await renderHistory(ctx, env, localQuery.label, localQuery.start, localQuery.end);
+    }
+  }
+
+  // 本地解析失敗，使用 AI
   const waitMsg = await ctx.reply("🔍 查詢範圍中...");
   const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
 
@@ -422,8 +435,19 @@ async function handleQuery(ctx, env, text, mode) {
 
     await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
 
-    if (mode === "list") await renderList(ctx, env, json.label, json.start, json.end, json);
-    else await renderHistory(ctx, env, json.label, json.start, json.end);
+    // 使用本地解析函數計算 AI 提取的 timeExpression
+    const parsedRange = parseQueryLocally(json.timeExpression);
+
+    if (parsedRange) {
+      if (mode === "list") {
+        await renderList(ctx, env, json.label, parsedRange.start, parsedRange.end, null);
+      } else {
+        await renderHistory(ctx, env, json.label, parsedRange.start, parsedRange.end);
+      }
+    } else {
+      // 如果本地解析也失敗，回退到顯示錯誤
+      await ctx.reply(`❌ 無法解析時間範圍：${json.timeExpression}`, { parse_mode: "HTML" });
+    }
   } catch (e) {
     // 直接報告錯誤，不進行任何包裝
     console.error("AI Query Error:", e);
