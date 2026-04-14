@@ -259,6 +259,46 @@ function parseQueryLocally(queryText) {
     return { start, end, label: '本月' };
   }
 
+  // 處理 "這週X" / "本週X" / "this X"
+  const thisWeekdayMatch = text.match(/(?:這週|本週|this)\s*([0-6]|週?[一二三四五六日]|sun|mon|tue|wed|thu|fri|sat)/i);
+  if (thisWeekdayMatch) {
+    const dayStr = thisWeekdayMatch[1].toLowerCase();
+    let targetDay;
+
+    if (/^[0-6]$/.test(dayStr)) {
+      targetDay = parseInt(dayStr);
+    } else {
+      const dayMap = {
+        '週日': 0, '周日': 0, '日': 0, 'sun': 0,
+        '週一': 1, '周一': 1, '一': 1, 'mon': 1,
+        '週二': 2, '周二': 2, '二': 2, 'tue': 2,
+        '週三': 3, '周三': 3, '三': 3, 'wed': 3,
+        '週四': 4, '周四': 4, '四': 4, 'thu': 4,
+        '週五': 5, '周五': 5, '五': 5, 'fri': 5,
+        '週六': 6, '周六': 6, '六': 6, 'sat': 6
+      };
+      targetDay = dayMap[dayStr];
+    }
+
+    if (targetDay !== undefined) {
+      const currentDayOfWeek = today.getDay();
+      let daysUntilTarget = targetDay - currentDayOfWeek;
+      // 如果目標日期已過（或就是今天），跳到下週
+      if (daysUntilTarget <= 0) {
+        daysUntilTarget += 7;
+      }
+      const targetDate = new Date(today);
+      targetDate.setDate(today.getDate() + daysUntilTarget);
+      const { start, end } = getDayRangeTaipei(targetDate);
+
+      const dayLabelMap = {
+        0: '週日', 1: '週一', 2: '週二', 3: '週三', 4: '週四', 5: '週五', 6: '週六'
+      };
+
+      return { start, end, label: `這${dayLabelMap[targetDay]}` };
+    }
+  }
+
   // 處理 "下週X" / "next X"
   const nextWeekdayMatch = text.match(/(?:下週|next)\s*([0-6]|週?[一二三四五六日]|sun|mon|tue|wed|thu|fri|sat)/i);
   if (nextWeekdayMatch) {
