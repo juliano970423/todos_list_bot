@@ -325,10 +325,41 @@ async function processScheduledReminders(bot, env) {
   }
 }
 
+// --- 7. 渲染例行性任務列表 ---
+async function renderRecurringTasks(ctx, env, tasks) {
+  if (!tasks || tasks.length === 0) {
+    return await ctx.reply(`📋 <b>例行性任務清單：</b>\n📭 目前無例行性任務。`, { parse_mode: "HTML" });
+  }
+
+  let msg = `📋 <b>例行性任務清單：</b>\n`;
+  tasks.forEach((t, i) => {
+    let timeDisplay = "";
+
+    if (t.remind_at > 0) {
+      if (t.all_day) {
+        timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)";
+      } else {
+        timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
+      }
+      timeDisplay += ` (${translateRule(t.cron_rule)})`;
+    } else {
+      timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
+    }
+
+    msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
+  });
+
+  return await ctx.reply(msg, {
+    parse_mode: "HTML",
+    reply_markup: new InlineKeyboard().text("🗑️ 管理模式", "manage_mode")
+  });
+}
+
 export {
   renderList,
   renderHistory,
   sendConfirmation,
   processScheduledReminders,
-  translateRule
+  translateRule,
+  renderRecurringTasks
 };
