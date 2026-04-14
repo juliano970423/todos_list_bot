@@ -136,6 +136,13 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
   });
   if (!filtered.length) return ctx.reply(`📭 ${label} 沒有待辦事項。`);
 
+  // 排序：先發生的在前面，無期限(-1)放最後
+  filtered.sort((a, b) => {
+    if (a.remind_at === -1) return 1;
+    if (b.remind_at === -1) return -1;
+    return a.remind_at - b.remind_at;
+  });
+
   let msg = `📋 <b>${label} 任務清單：</b>\n`;
   filtered.forEach((t, i) => {
     let timeDisplay = "";
