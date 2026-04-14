@@ -1,6 +1,6 @@
 // task.js - 任務處理模組
 import { InlineKeyboard } from "grammy";
-import { formatTimestampToTaipeiTime, TAIPEI_OFFSET } from "./time.js";
+import { formatTimestampToTaipeiTime, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei } from "./time.js";
 import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime } from "./db.js";
 import { calculateNext } from "./time.js";
 
@@ -66,8 +66,9 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     });
   }
 
-  const start = startTs || Math.floor(new Date().setHours(0,0,0,0)/1000);
-  const end = endTs || Math.floor(new Date().setHours(23,59,59,999)/1000);
+  const todayRange = getTodayRangeTaipei();
+  const start = startTs ?? todayRange.start;
+  const end = endTs ?? todayRange.end;
 
   const filtered = results.filter(t => {
     if (t.cron_rule) {
@@ -268,7 +269,7 @@ async function sendConfirmation(ctx, state) {
 // 處理定時任務提醒
 async function processScheduledReminders(bot, env) {
   const nowTs = Math.floor(Date.now() / 1000);
-  const nowTaipei = new Date(Date.now() + TAIPEI_OFFSET * 60 * 1000);
+  const nowTaipei = getNowTaipei();
   const currentDayOfWeek = nowTaipei.getDay(); // 0 for Sunday, 1 for Monday, ..., 6 for Saturday
   const currentDayOfWeekISO = currentDayOfWeek === 0 ? 7 : currentDayOfWeek; // Convert to ISO (1 for Mon, ..., 7 for Sun)
 

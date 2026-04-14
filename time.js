@@ -2,6 +2,113 @@
 // 台北時間偏移量 (分鐘)
 const TAIPEI_OFFSET = 8 * 60;
 
+// ============================================
+// 核心時區轉換函數（所有時間戳計算統一走這裡）
+// ============================================
+
+/**
+ * 獲取當前台北時間的 Date 對象（已校正時區）
+ */
+function getNowTaipei() {
+  return new Date(Date.now() + TAIPEI_OFFSET * 60000);
+}
+
+/**
+ * 將本地時間 Date 轉換為 UTC 時間戳（存入資料庫用）
+ * @param {Date} localDate - 本地時間（台北時間）
+ * @returns {number} UTC 時間戳（秒）
+ */
+function localDateToUtcTs(localDate) {
+  return Math.floor((localDate.getTime() - TAIPEI_OFFSET * 60000) / 1000);
+}
+
+/**
+ * 獲取某一天的時間範圍（台北時間）
+ * @param {Date} date - 日期對象（會被設為 00:00:00）
+ * @returns {{ start: number, end: number }} UTC 時間戳（秒）
+ */
+function getDayRangeTaipei(date) {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(date);
+  end.setHours(23, 59, 59, 999);
+
+  return {
+    start: localDateToUtcTs(start),
+    end: localDateToUtcTs(end)
+  };
+}
+
+/**
+ * 獲取今天的時間範圍（台北時間）
+ * @returns {{ start: number, end: number }} UTC 時間戳（秒）
+ */
+function getTodayRangeTaipei() {
+  return getDayRangeTaipei(getNowTaipei());
+}
+
+/**
+ * 獲取「今天及未來 N 天」的時間範圍（台北時間）
+ * @param {number} days - 未來天數（不含今天）
+ * @returns {{ start: number, end: number }} UTC 時間戳（秒）
+ */
+function getTodayAndFutureRangeTaipei(days) {
+  const now = getNowTaipei();
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(now);
+  end.setDate(end.getDate() + days);
+  end.setHours(23, 59, 59, 999);
+
+  return {
+    start: localDateToUtcTs(start),
+    end: localDateToUtcTs(end)
+  };
+}
+
+/**
+ * 獲取「過去 N 天到今天」的時間範圍（台北時間）
+ * @param {number} days - 過去天數
+ * @returns {{ start: number, end: number }} UTC 時間戳（秒）
+ */
+function getPastDaysRangeTaipei(days) {
+  const now = getNowTaipei();
+  const start = new Date(now);
+  start.setDate(start.getDate() - days);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
+
+  return {
+    start: localDateToUtcTs(start),
+    end: localDateToUtcTs(end)
+  };
+}
+
+/**
+ * 獲取兩個日期之間的時間範圍（台北時間）
+ * @param {Date} startDate - 開始日期
+ * @param {Date} endDate - 結束日期
+ * @returns {{ start: number, end: number }} UTC 時間戳（秒）
+ */
+function getDateRangeTaipei(startDate, endDate) {
+  const start = new Date(startDate);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(endDate);
+  end.setHours(23, 59, 59, 999);
+
+  return {
+    start: localDateToUtcTs(start),
+    end: localDateToUtcTs(end)
+  };
+}
+
+// ============================================
+// 舊函數（向後兼容，內部改用新函數）
+// ============================================
+
 // --- 輔助：取得人類可讀的台北時間 ---
 function getTaipeiTimeString(dateObj) {
   return dateObj.toLocaleString('zh-TW', {
@@ -18,23 +125,20 @@ function getTaipeiTimeString(dateObj) {
 
 // 基於上次設定的時間計算下次時間 (避免時間漂移)
 function calculateNext(lastTs, rule) {
-  // 基於上次設定的時間計算下次時間 (避免時間漂移)
   let d = new Date(lastTs * 1000);
 
   if (rule === 'daily') {
     d.setDate(d.getDate() + 1);
   } else if (rule.startsWith('weekly:')) {
-    // 對於週期性週任務，需要計算下一個符合規則的日期
     const days = rule.split(':')[1].split(',').map(Number);
-    const currentDayOfWeekISO = d.getDay() === 0 ? 7 : d.getDay(); // Convert to ISO (1 for Mon, ..., 7 for Sun)
+    const currentDayOfWeekISO = d.getDay() === 0 ? 7 : d.getDay();
 
-    // 找到當前日期後下一個符合規則的日期
     let nextDayOffset = 1;
     let found = false;
 
     while (nextDayOffset <= 7 && !found) {
       let potentialDay = (currentDayOfWeekISO + nextDayOffset) % 7;
-      if (potentialDay === 0) potentialDay = 7; // Sunday should be 7, not 0
+      if (potentialDay === 0) potentialDay = 7;
       if (days.includes(potentialDay)) {
         found = true;
         d.setDate(d.getDate() + nextDayOffset);
@@ -46,9 +150,7 @@ function calculateNext(lastTs, rule) {
     d.setMonth(d.getMonth() + 1);
   } else if (rule.startsWith('yearly:')) {
     d.setFullYear(d.getFullYear() + 1);
-    // 確保在閏年的2月29日之後的年份中，日期被正確調整
     if (d.getMonth() === 1 && d.getDate() === 29 && !(d.getFullYear() % 4 === 0 && (d.getFullYear() % 100 !== 0 || d.getFullYear() % 400 === 0))) {
-      // 如果是閏年2月29日，但下一年不是閏年，則設為2月28日
       d.setDate(28);
     }
   }
@@ -56,27 +158,32 @@ function calculateNext(lastTs, rule) {
   return Math.floor(d.getTime() / 1000);
 }
 
-// 獲取當天開始時間戳
+// 獲取當天開始時間戳（已校正時區）
 function getDayStartTimestamp() {
-  return Math.floor(new Date().setHours(0,0,0,0)/1000);
+  return getTodayRangeTaipei().start;
 }
 
-// 獲取當天結束時間戳
+// 獲取當天結束時間戳（已校正時區）
 function getDayEndTimestamp() {
-  return Math.floor(new Date().setHours(23,59,59,999)/1000);
+  return getTodayRangeTaipei().end;
 }
 
 // 將時間戳轉換為台北時間字串
 function formatTimestampToTaipeiTime(timestamp) {
   if (timestamp === -1) return "無時間限制";
-
   const date = new Date(timestamp * 1000);
-  // 返回包含時分秒的完整時間
   return date.toLocaleString('zh-TW', {timeZone:'Asia/Taipei', hour12:false});
 }
 
 export {
   TAIPEI_OFFSET,
+  getNowTaipei,
+  localDateToUtcTs,
+  getDayRangeTaipei,
+  getTodayRangeTaipei,
+  getTodayAndFutureRangeTaipei,
+  getPastDaysRangeTaipei,
+  getDateRangeTaipei,
   getTaipeiTimeString,
   calculateNext,
   getDayStartTimestamp,

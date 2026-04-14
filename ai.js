@@ -1,8 +1,6 @@
 // ai.js - AI 處理模組
 import * as chrono from "chrono-node";
-
-// 台北時間偏移量 (分鐘)
-const TAIPEI_OFFSET = 8 * 60;
+import { TAIPEI_OFFSET, getNowTaipei, localDateToUtcTs, getDayRangeTaipei, getDateRangeTaipei } from "./time.js";
 
 // --- 輔助：取得人類可讀的台北時間 (給 AI 當參考) ---
 function getTaipeiTimeString(dateObj) {
@@ -176,86 +174,60 @@ async function callAI(env, prompt) {
   }
 }
 
-// 本地時間解析
+// 本地時間解析（使用統一的時區函數）
 function parseTimeLocally(text) {
-  const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+  const refDate = getNowTaipei();
   const results = chrono.parse(text, refDate, { forwardDate: true });
   if (!results.length) return null;
 
   const r = results[0];
-  // 移除時間文字和常見廢話
   let task = text.replace(r.text, "").replace(/提醒我|記得|幫我|remind me/gi, "").trim();
   if (!task) task = "未命名任務";
 
   const date = r.date();
-  // 修正 Chrono 時區偏移 (假設解析結果為本地時間)
-  const utcTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
+  const utcTs = localDateToUtcTs(date);
 
   return { task, utcTimestamp: utcTs };
 }
 
-// 本地查詢時間範圍解析
+// 本地查詢時間範圍解析（使用統一的時區函數）
 function parseQueryLocally(queryText) {
-  const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+  const refDate = getNowTaipei();
   const text = queryText.toLowerCase();
   const today = new Date(refDate);
   today.setHours(0, 0, 0, 0);
 
-  // 計算當天的開始和結束時間戳（UTC）
-  const dayStartTs = Math.floor((today.getTime() - TAIPEI_OFFSET * 60000) / 1000);
-  const dayEndTs = dayStartTs + 86400 - 1;
-
-  console.log(`[DEBUG parseQueryLocally] 查詢: "${queryText}"`);
-  console.log(`[DEBUG parseQueryLocally] 今天時間戳: ${dayStartTs} (${new Date(dayStartTs * 1000).toISOString()}) 到 ${dayEndTs} (${new Date(dayEndTs * 1000).toISOString()})`);
-
   // 處理 "今天"
   if (text === '今天' || text === 'today') {
-    console.log(`[DEBUG parseQueryLocally] 返回今天: ${dayStartTs} - ${dayEndTs}`);
-    return {
-      start: dayStartTs,
-      end: dayEndTs,
-      label: '今天'
-    };
+    const { start, end } = getDayRangeTaipei(today);
+    return { start, end, label: '今天' };
   }
 
   // 處理 "明天"
   if (text === '明天' || text === 'tomorrow') {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStartTs = Math.floor((tomorrow.getTime() - TAIPEI_OFFSET * 60000) / 1000);
-    return {
-      start: tomorrowStartTs,
-      end: tomorrowStartTs + 86400 - 1,
-      label: '明天'
-    };
+    const { start, end } = getDayRangeTaipei(tomorrow);
+    return { start, end, label: '明天' };
   }
 
   // 處理 "昨天"
   if (text === '昨天' || text === 'yesterday') {
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStartTs = Math.floor((yesterday.getTime() - TAIPEI_OFFSET * 60000) / 1000);
-    return {
-      start: yesterdayStartTs,
-      end: yesterdayStartTs + 86400 - 1,
-      label: '昨天'
-    };
+    const { start, end } = getDayRangeTaipei(yesterday);
+    return { start, end, label: '昨天' };
   }
 
   // 處理 "本週" / "this week"
   if (text === '本週' || text === 'this week') {
-    const currentDayOfWeek = today.getDay(); // 0 for Sunday, 1 for Monday, ..., 6 for Saturday
+    const currentDayOfWeek = today.getDay();
     const monday = new Date(today);
     monday.setDate(today.getDate() - (currentDayOfWeek === 0 ? 6 : currentDayOfWeek - 1));
-    const mondayStartTs = Math.floor((monday.getTime() - TAIPEI_OFFSET * 60000) / 1000);
     const sunday = new Date(monday);
     sunday.setDate(monday.getDate() + 6);
-    const sundayEndTs = Math.floor((sunday.getTime() - TAIPEI_OFFSET * 60000) / 1000) + 86400 - 1;
-    return {
-      start: mondayStartTs,
-      end: sundayEndTs,
-      label: '本週'
-    };
+    const { start, end } = getDateRangeTaipei(monday, sunday);
+    return { start, end, label: '本週' };
   }
 
   // 處理 "下週" / "next week"
@@ -263,15 +235,10 @@ function parseQueryLocally(queryText) {
     const currentDayOfWeek = today.getDay();
     const nextMonday = new Date(today);
     nextMonday.setDate(today.getDate() + (7 - (currentDayOfWeek === 0 ? 6 : currentDayOfWeek - 1)));
-    const nextMondayStartTs = Math.floor((nextMonday.getTime() - TAIPEI_OFFSET * 60000) / 1000);
     const nextSunday = new Date(nextMonday);
     nextSunday.setDate(nextMonday.getDate() + 6);
-    const nextSundayEndTs = Math.floor((nextSunday.getTime() - TAIPEI_OFFSET * 60000) / 1000) + 86400 - 1;
-    return {
-      start: nextMondayStartTs,
-      end: nextSundayEndTs,
-      label: '下週'
-    };
+    const { start, end } = getDateRangeTaipei(nextMonday, nextSunday);
+    return { start, end, label: '下週' };
   }
 
   // 處理 "N天後" / "in N days"
@@ -280,25 +247,16 @@ function parseQueryLocally(queryText) {
     const days = parseInt(inDaysMatch[1]);
     const targetDate = new Date(today);
     targetDate.setDate(today.getDate() + days);
-    const targetStartTs = Math.floor((targetDate.getTime() - TAIPEI_OFFSET * 60000) / 1000);
-    return {
-      start: targetStartTs,
-      end: targetStartTs + 86400 - 1,
-      label: `${days}天後`
-    };
+    const { start, end } = getDayRangeTaipei(targetDate);
+    return { start, end, label: `${days}天後` };
   }
 
   // 處理 "本月" / "this month"
   if (text === '本月' || text === 'this month') {
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
     const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-    const monthStartTs = Math.floor((monthStart.getTime() - TAIPEI_OFFSET * 60000) / 1000);
-    const monthEndTs = Math.floor((monthEnd.getTime() - TAIPEI_OFFSET * 60000) / 1000) + 86400 - 1;
-    return {
-      start: monthStartTs,
-      end: monthEndTs,
-      label: '本月'
-    };
+    const { start, end } = getDateRangeTaipei(monthStart, monthEnd);
+    return { start, end, label: '本月' };
   }
 
   // 處理 "下週X" / "next X"
@@ -307,7 +265,6 @@ function parseQueryLocally(queryText) {
     const dayStr = nextWeekdayMatch[1].toLowerCase();
     let targetDay;
 
-    // 將星期幾映射到數字（0=周日, 1=周一, ..., 6=周六）
     if (/^[0-6]$/.test(dayStr)) {
       targetDay = parseInt(dayStr);
     } else {
@@ -325,25 +282,17 @@ function parseQueryLocally(queryText) {
 
     if (targetDay !== undefined) {
       const currentDayOfWeek = today.getDay();
-      // 計算到下週的指定星期幾的天數
-      // 方法：先計算到本週結束的天數，再加上目標星期幾
       const daysUntilEndOfWeek = 7 - currentDayOfWeek;
-      // 如果今天是週日（0），那么 daysUntilEndOfWeek = 7
-      // 否则 daysUntilEndOfWeek = 7 - currentDayOfWeek
       const daysUntilNextWeek = (currentDayOfWeek === 0 ? 7 : daysUntilEndOfWeek) + targetDay;
       const nextWeekday = new Date(today);
       nextWeekday.setDate(today.getDate() + daysUntilNextWeek);
-      const nextWeekdayStartTs = Math.floor((nextWeekday.getTime() - TAIPEI_OFFSET * 60000) / 1000);
+      const { start, end } = getDayRangeTaipei(nextWeekday);
 
       const dayLabelMap = {
         0: '週日', 1: '週一', 2: '週二', 3: '週三', 4: '週四', 5: '週五', 6: '週六'
       };
 
-      return {
-        start: nextWeekdayStartTs,
-        end: nextWeekdayStartTs + 86400 - 1,
-        label: `下${dayLabelMap[targetDay]}`
-      };
+      return { start, end, label: `下${dayLabelMap[targetDay]}` };
     }
   }
 
@@ -353,19 +302,11 @@ function parseQueryLocally(queryText) {
     const parsedDate = chronoResults[0].date();
     const dateStart = new Date(parsedDate);
     dateStart.setHours(0, 0, 0, 0);
-    const startTs = Math.floor((dateStart.getTime() - TAIPEI_OFFSET * 60000) / 1000);
-    const endTs = startTs + 86400 - 1;
+    const { start, end } = getDayRangeTaipei(dateStart);
 
-    // 生成標籤
     const month = dateStart.getMonth() + 1;
     const day = dateStart.getDate();
-    const label = `${month}月${day}日`;
-
-    return {
-      start: startTs,
-      end: endTs,
-      label: label
-    };
+    return { start, end, label: `${month}月${day}日` };
   }
 
   // 本地解析失敗
@@ -377,6 +318,5 @@ export {
   getQueryPrompt,
   callAI,
   parseTimeLocally,
-  parseQueryLocally,
-  TAIPEI_OFFSET
+  parseQueryLocally
 };

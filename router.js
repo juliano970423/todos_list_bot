@@ -4,7 +4,7 @@ import * as chrono from "chrono-node";
 import { getTaskPrompt, getQueryPrompt, callAI, parseTimeLocally, parseQueryLocally } from "./ai.js";
 import { sendConfirmation, renderList, renderHistory } from "./task.js";
 import { addTodo, getTodos, deleteTodosByIds } from "./db.js";
-import { TAIPEI_OFFSET } from "./time.js";
+import { TAIPEI_OFFSET, getTodayAndFutureRangeTaipei, getNowTaipei, localDateToUtcTs } from "./time.js";
 
 // 處理訊息的路由
 async function handleMessage(ctx, env) {
@@ -46,7 +46,7 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
     waitMsg = await ctx.reply("🤖 正在思考與解析...");
   }
 
-  const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+  const now = getNowTaipei();
 
   try {
     const prompt = getTaskPrompt(text, now);
@@ -59,7 +59,7 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
 
     // 處理時間 - 由 JavaScript 解析 AI 提取的時間字符串
     if (json.time) {
-      const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+      const refDate = getNowTaipei();
       let date;
 
       // 檢查時間字符串是否包含 ISO 格式日期時間 (YYYY-MM-DDTHH:mm)
@@ -216,10 +216,10 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
       }
 
       // 修正時區偏移
-      remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
+      remindTs = localDateToUtcTs(date);
     } else if (json.rule) {
       // 如果沒有提供時間但有規則（週期性任務），計算下一個執行時間
-      const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+      const refDate = getNowTaipei();
       let date = new Date(refDate); // 從當前時間開始計算
 
       if (json.rule.startsWith('daily')) {
@@ -273,7 +273,7 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
       }
 
       // 修正時區偏移
-      remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
+      remindTs = localDateToUtcTs(date);
     }
 
     // 處理任務名稱 (如果 AI 把任務名稱吃掉了，用原文補救)
@@ -290,7 +290,7 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
     // 如果是 yearly 規則，需要特殊處理時間
     if (finalRule && finalRule.startsWith('yearly:')) {
       // 對於 yearly 任務，需要計算下一個相符的日期
-      const refDate = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+      const refDate = getNowTaipei();
       const results = chrono.parse(json.time, refDate, { forwardDate: true });
 
       if (results.length > 0) {
@@ -300,7 +300,7 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
           // 如果日期已過，設為明年
           date.setFullYear(date.getFullYear() + 1);
         }
-        remindTs = Math.floor((date.getTime() - TAIPEI_OFFSET * 60000) / 1000);
+        remindTs = localDateToUtcTs(date);
       }
     }
 
@@ -360,13 +360,9 @@ async function handleQuery(ctx, env, text, mode) {
 
   if (!queryText) {
       if (mode === "list") {
-          // 無參數時顯示最近一週的任務
-          const now = new Date();
-          const startOfWeek = new Date(now);
-          startOfWeek.setDate(now.getDate() - 7); // 最近 7 天
-          const startTs = Math.floor(startOfWeek.setHours(0,0,0,0)/1000);
-          const endTs = Math.floor(new Date().setHours(23,59,59,999)/1000);
-          return await renderList(ctx, env, "近期", startTs, endTs, null);
+          // 無參數時顯示今天及未來 7 天的待辦事項
+          const { start, end } = getTodayAndFutureRangeTaipei(7);
+          return await renderList(ctx, env, "近期一週", start, end, null);
       } else {
           return await renderHistory(ctx, env, "最近");
       }
@@ -435,7 +431,7 @@ async function handleQuery(ctx, env, text, mode) {
 
   // 本地解析失敗，使用 AI
   const waitMsg = await ctx.reply("🔍 查詢範圍中...");
-  const now = new Date(Date.now() + TAIPEI_OFFSET * 60000);
+  const now = getNowTaipei();
 
   try {
     const prompt = getQueryPrompt(queryText, now);
