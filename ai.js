@@ -373,6 +373,14 @@ function parseQueryLocally(queryText) {
     return { start, end, label: '昨天' };
   }
 
+  // 處理 "後天"
+  if (text === '後天' || text === '后天') {
+    const dayAfter = new Date(today);
+    dayAfter.setDate(dayAfter.getDate() + 2);
+    const { start, end } = getDayRangeTaipei(dayAfter);
+    return { start, end, label: '後天' };
+  }
+
   // 處理 "本週" / "this week"
   if (text === '本週' || text === 'this week') {
     const currentDayOfWeek = today.getDay();
@@ -385,7 +393,7 @@ function parseQueryLocally(queryText) {
   }
 
   // 處理 "下週" / "next week"
-  if (text === '下週' || text === 'next week') {
+  if (text === '下週' || text === '下週' || text === 'next week') {
     const currentDayOfWeek = today.getDay();
     const nextMonday = new Date(today);
     nextMonday.setDate(today.getDate() + (7 - (currentDayOfWeek === 0 ? 6 : currentDayOfWeek - 1)));
@@ -395,14 +403,75 @@ function parseQueryLocally(queryText) {
     return { start, end, label: '下週' };
   }
 
-  // 處理 "N天後" / "in N days"
-  const inDaysMatch = text.match(/(?:in|)\s*(\d+)\s*(?:days|天後)/);
+  // 處理 "上週" / "last week"
+  if (text === '上週' || text === '上周' || text === 'last week') {
+    const currentDayOfWeek = today.getDay();
+    const lastMonday = new Date(today);
+    lastMonday.setDate(today.getDate() - (currentDayOfWeek === 0 ? 6 : currentDayOfWeek - 1) - 7);
+    const lastSunday = new Date(lastMonday);
+    lastSunday.setDate(lastMonday.getDate() + 6);
+    const { start, end } = getDateRangeTaipei(lastMonday, lastSunday);
+    return { start, end, label: '上週' };
+  }
+
+  // 處理 "下月" / "下個月" / "next month"
+  if (text === '下月' || text === '下個月' || text === 'next month') {
+    const nextMonth = new Date(today);
+    nextMonth.setMonth(nextMonth.getMonth() + 1, 1);
+    const monthStart = new Date(nextMonth.getFullYear(), nextMonth.getMonth(), 1);
+    const monthEnd = new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0);
+    const { start, end } = getDateRangeTaipei(monthStart, monthEnd);
+    return { start, end, label: '下個月' };
+  }
+
+  // 處理 "上月" / "上個月" / "last month"
+  if (text === '上月' || text === '上個月' || text === 'last month') {
+    const lastMonth = new Date(today);
+    lastMonth.setMonth(lastMonth.getMonth() - 1, 1);
+    const monthStart = new Date(lastMonth.getFullYear(), lastMonth.getMonth(), 1);
+    const monthEnd = new Date(lastMonth.getFullYear(), lastMonth.getMonth() + 1, 0);
+    const { start, end } = getDateRangeTaipei(monthStart, monthEnd);
+    return { start, end, label: '上個月' };
+  }
+
+  // 處理 "N天後" / "in N days" / 中文數字
+  const chineseNumMap = { '一': 1, '二': 2, '兩': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
+  const inDaysMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+)\s*(?:days|天後)/i);
   if (inDaysMatch) {
-    const days = parseInt(inDaysMatch[1]);
+    let days = parseInt(inDaysMatch[1]);
+    if (isNaN(days)) {
+      days = chineseNumMap[inDaysMatch[1]] || 1;
+    }
     const targetDate = new Date(today);
     targetDate.setDate(today.getDate() + days);
     const { start, end } = getDayRangeTaipei(targetDate);
     return { start, end, label: `${days}天後` };
+  }
+
+  // 處理 "N週後" / "in N weeks"
+  const inWeeksMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+)\s*(?:weeks?|週後|周後)/i);
+  if (inWeeksMatch) {
+    let weeks = parseInt(inWeeksMatch[1]);
+    if (isNaN(weeks)) {
+      weeks = chineseNumMap[inWeeksMatch[1]] || 1;
+    }
+    const targetDate = new Date(today);
+    targetDate.setDate(today.getDate() + weeks * 7);
+    const { start, end } = getDayRangeTaipei(targetDate);
+    return { start, end, label: `${weeks}週後` };
+  }
+
+  // 處理 "N個月後" / "in N months"
+  const inMonthsMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+)\s*(?:months?|個月後)/i);
+  if (inMonthsMatch) {
+    let months = parseInt(inMonthsMatch[1]);
+    if (isNaN(months)) {
+      months = chineseNumMap[inMonthsMatch[1]] || 1;
+    }
+    const targetDate = new Date(today);
+    targetDate.setMonth(targetDate.getMonth() + months);
+    const { start, end } = getDayRangeTaipei(targetDate);
+    return { start, end, label: `${months}個月後` };
   }
 
   // 處理 "本月" / "this month"
@@ -536,7 +605,7 @@ function parseQueryLocally(queryText) {
 
   // 先檢查輸入是否包含日期特徵，沒有的話直接返回 null
   // 包含英文月份名、中文日期關鍵詞、數字日期格式等
-  const hasDateFeature = /今天|明天|昨天|本週|下週|本月|\d{1,2}[\/\-月]|\d{1,2}[日號]|週|week|day|after|before|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(queryText);
+  const hasDateFeature = /今天|明天|昨天|後天|本週|下週|上週|本周|下周|上周|本月|下月|上月|個月|週後|周後|天後|\d{1,2}[\/\-月]|\d{1,2}[日號]|週|周|week|month|day|after|before|ago|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(queryText);
 
   if (!hasDateFeature) {
     return null;
