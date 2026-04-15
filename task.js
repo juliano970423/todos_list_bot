@@ -62,7 +62,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
     return await ctx.reply(msg, {
       parse_mode: "HTML",
-      reply_markup: new InlineKeyboard().text("🗑️ 管理喵", "manage_mode")
+      reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
     });
   }
 
@@ -193,7 +193,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
   await ctx.reply(msg, {
     parse_mode: "HTML",
-    reply_markup: new InlineKeyboard().text("🗑️ 管理喵", "manage_mode")
+    reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
   });
 }
 

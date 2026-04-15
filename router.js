@@ -493,7 +493,149 @@ async function handleCallbackQuery(ctx, env) {
     return await processTaskWithAI(ctx, env, taskContent, true);
   }
 
-  // 管理模式 - 主選單
+  // 管理模式 - 帶範圍（從 /list 觸發）
+  if (data.startsWith("mg|")) {
+    const parts = data.split("|");
+    const start = parts[1] ? parseInt(parts[1]) : null;
+    const end = parts[2] ? parseInt(parts[2]) : null;
+
+    const results = await getTodos(env, userId, 0);
+    if (!results.length) return ctx.editMessageText("😿 喵～目前沒有待辦事項呢～");
+
+    // 根據範圍篩選任務
+    let filtered = results;
+    if (start && end) {
+      filtered = results.filter(t => {
+        if (t.cron_rule) {
+          // 週期性任務的篩選邏輯
+          if (t.cron_rule.startsWith('weekly:')) {
+            const days = t.cron_rule.split(':')[1].split(',').map(Number);
+            const startDate = new Date(start * 1000);
+            const endDate = new Date(end * 1000);
+            let currentDate = new Date(startDate);
+            while (currentDate <= endDate) {
+              const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay();
+              if (days.includes(dayOfWeekISO)) return true;
+              currentDate.setDate(currentDate.getDate() + 1);
+            }
+            return false;
+          }
+          if (t.cron_rule === 'daily') return true;
+          if (t.cron_rule.startsWith('monthly:')) {
+            const dayOfMonth = parseInt(t.cron_rule.split(':')[1]);
+            const startDate = new Date(start * 1000);
+            const endDate = new Date(end * 1000);
+            let currentDate = new Date(startDate);
+            while (currentDate <= endDate) {
+              if (currentDate.getDate() === dayOfMonth) return true;
+              currentDate.setDate(currentDate.getDate() + 1);
+            }
+            return false;
+          }
+          if (t.cron_rule.startsWith('yearly:')) {
+            const monthDay = t.cron_rule.split(':')[1];
+            const [month, day] = monthDay.split('-').map(Number);
+            const startDate = new Date(start * 1000);
+            const endDate = new Date(end * 1000);
+            let currentDate = new Date(startDate);
+            while (currentDate <= endDate) {
+              if (currentDate.getMonth() + 1 === month && currentDate.getDate() === day) return true;
+              currentDate.setDate(currentDate.getDate() + 1);
+            }
+            return false;
+          }
+          return false;
+        }
+        return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
+      });
+    }
+
+    if (!filtered.length) return ctx.editMessageText("😿 喵～該範圍沒有待辦事項呢～");
+
+    const kb = new InlineKeyboard();
+    filtered.forEach(t => {
+      // 顯示日期 + 任務名稱
+      let displayText = t.task;
+      if (t.remind_at > 0) {
+        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        displayText = `${dateStr} ${t.task}`;
+      } else if (t.remind_at === -1) {
+        displayText = `無期限 ${t.task}`;
+      }
+      kb.text(`⬜️ ${displayText}`, `tog_f|${t.id}|${start || 0}|${end || 0}`).row();
+    });
+    kb.text("❌ 關閉", "cancel").text("🗑️ 刪除選取", `conf_del_f|${start || 0}|${end || 0}`).row();
+
+    await ctx.editMessageText("🗑️ <b>管理喵～</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 範圍管理模式的勾選邏輯
+  if (data.startsWith("tog_f|")) {
+    const parts = data.split("|");
+    const tid = parts[1];
+    const start = parseInt(parts[2]) || null;
+    const end = parseInt(parts[3]) || null;
+    const selectedIds = parts[4] ? parts[4].split(",").filter(x => x) : [];
+
+    let sSet = new Set(selectedIds);
+    sSet.has(tid) ? sSet.delete(tid) : sSet.add(tid);
+
+    const results = await getTodos(env, userId, 0);
+
+    // 根據範圍篩選任務
+    let filtered = results;
+    if (start && end) {
+      filtered = results.filter(t => {
+        if (t.cron_rule) {
+          if (t.cron_rule.startsWith('weekly:')) {
+            const days = t.cron_rule.split(':')[1].split(',').map(Number);
+            const startDate = new Date(start * 1000);
+            const endDate = new Date(end * 1000);
+            let currentDate = new Date(startDate);
+            while (currentDate <= endDate) {
+              const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay();
+              if (days.includes(dayOfWeekISO)) return true;
+              currentDate.setDate(currentDate.getDate() + 1);
+            }
+            return false;
+          }
+          if (t.cron_rule === 'daily') return true;
+          return false;
+        }
+        return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
+      });
+    }
+
+    const kb = new InlineKeyboard();
+    const newList = Array.from(sSet).join(",");
+    filtered.forEach(t => {
+      let displayText = t.task;
+      if (t.remind_at > 0) {
+        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        displayText = `${dateStr} ${t.task}`;
+      } else if (t.remind_at === -1) {
+        displayText = `無期限 ${t.task}`;
+      }
+      kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${displayText}`, `tog_f|${t.id}|${start || 0}|${end || 0}|${newList}`).row();
+    });
+    kb.text("❌ 關閉", "cancel").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del_f|${start || 0}|${end || 0}|${newList}`).row();
+
+    await ctx.editMessageText("🗑️ <b>管理喵～</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 範圍管理模式的確認刪除
+  if (data.startsWith("conf_del_f|")) {
+    const parts = data.split("|");
+    const idsStr = parts[3];
+    if (!idsStr) return ctx.answerCallbackQuery("喵～未選擇任何任務");
+    const ids = idsStr.split(",").filter(x => x);
+    if (!ids.length) return ctx.answerCallbackQuery("喵～未選擇任何任務");
+
+    await deleteTodosByIds(env, ids, userId);
+    await ctx.editMessageText(`🗑️ 喵～已刪除 ${ids.length} 個任務！`);
+  }
+
+  // 管理模式 - 主選單（全局）
   if (data === "manage_mode") {
     const results = await getTodos(env, userId, 0);
     if (!results.length) return ctx.editMessageText("😿 喵～目前沒有待辦事項呢～");
@@ -513,7 +655,16 @@ async function handleCallbackQuery(ctx, env) {
     if (!results.length) return ctx.editMessageText("😿 喵～目前沒有待辦事項呢～");
 
     const kb = new InlineKeyboard();
-    results.forEach(t => kb.text(`⬜️ ${t.task}`, `tog_a|${t.id}|`).row());
+    results.forEach(t => {
+      let displayText = t.task;
+      if (t.remind_at > 0) {
+        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        displayText = `${dateStr} ${t.task}`;
+      } else if (t.remind_at === -1) {
+        displayText = `無期限 ${t.task}`;
+      }
+      kb.text(`⬜️ ${displayText}`, `tog_a|${t.id}|`).row();
+    });
     kb.text("⬅️ 返回", "manage_mode").text("🗑️ 刪除選取", "conf_del_a|").row();
     kb.text("❌ 關閉", "cancel");
 
@@ -532,7 +683,16 @@ async function handleCallbackQuery(ctx, env) {
       const results = await getTodos(env, userId, 0);
       const kb = new InlineKeyboard();
       const newList = Array.from(sSet).join(",");
-      results.forEach(t => kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${t.task}`, `tog_a|${t.id}|${newList}`).row());
+      results.forEach(t => {
+        let displayText = t.task;
+        if (t.remind_at > 0) {
+          const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+          displayText = `${dateStr} ${t.task}`;
+        } else if (t.remind_at === -1) {
+          displayText = `無期限 ${t.task}`;
+        }
+        kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${displayText}`, `tog_a|${t.id}|${newList}`).row();
+      });
       kb.text("⬅️ 返回", "manage_mode").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del_a|${newList}`).row();
       kb.text("❌ 關閉", "cancel");
 
@@ -596,8 +756,16 @@ async function handleCallbackQuery(ctx, env) {
     }
 
     const kb = new InlineKeyboard();
-    // 使用 tog_d 格式保持日期上下文
-    filtered.forEach(t => kb.text(`⬜️ ${t.task}`, `tog_d|${t.id}||${dateKey}`).row());
+    filtered.forEach(t => {
+      let displayText = t.task;
+      if (t.remind_at > 0) {
+        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        displayText = `${dateStr} ${t.task}`;
+      } else if (t.remind_at === -1) {
+        displayText = `無期限 ${t.task}`;
+      }
+      kb.text(`⬜️ ${displayText}`, `tog_d|${t.id}||${dateKey}`).row();
+    });
 
     kb.text("⬅️ 返回", "manage_date|").text("🗑️ 刪除選取", `conf_del_d||${dateKey}`).row();
     kb.text("❌ 關閉", "cancel");
@@ -627,7 +795,16 @@ async function handleCallbackQuery(ctx, env) {
 
       const kb = new InlineKeyboard();
       const newList = Array.from(sSet).join(",");
-      filtered.forEach(t => kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${t.task}`, `tog_d|${t.id}|${newList}|${dateKey}`).row());
+      filtered.forEach(t => {
+        let displayText = t.task;
+        if (t.remind_at > 0) {
+          const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+          displayText = `${dateStr} ${t.task}`;
+        } else if (t.remind_at === -1) {
+          displayText = `無期限 ${t.task}`;
+        }
+        kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${displayText}`, `tog_d|${t.id}|${newList}|${dateKey}`).row();
+      });
 
       kb.text("⬅️ 返回", "manage_date|").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del_d|${newList}|${dateKey}`).row();
       kb.text("❌ 關閉", "cancel");
@@ -707,8 +884,16 @@ async function handleCallbackQuery(ctx, env) {
     }
 
     const kb = new InlineKeyboard();
-    // 使用 tog_r 格式保持规则上下文
-    filtered.forEach(t => kb.text(`⬜️ ${t.task}`, `tog_r|${t.id}||${ruleKey}`).row());
+    filtered.forEach(t => {
+      let displayText = t.task;
+      if (t.remind_at > 0) {
+        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        displayText = `${dateStr} ${t.task}`;
+      } else if (t.remind_at === -1) {
+        displayText = `無期限 ${t.task}`;
+      }
+      kb.text(`⬜️ ${displayText}`, `tog_r|${t.id}||${ruleKey}`).row();
+    });
 
     // 如果是週期性任務，顯示特殊刪除選項
     if (ruleKey !== "單次" && ruleKey !== "其他") {
@@ -748,7 +933,16 @@ async function handleCallbackQuery(ctx, env) {
 
       const kb = new InlineKeyboard();
       const newList = Array.from(sSet).join(",");
-      filtered.forEach(t => kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${t.task}`, `tog_r|${t.id}|${newList}|${ruleKey}`).row());
+      filtered.forEach(t => {
+        let displayText = t.task;
+        if (t.remind_at > 0) {
+          const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+          displayText = `${dateStr} ${t.task}`;
+        } else if (t.remind_at === -1) {
+          displayText = `無期限 ${t.task}`;
+        }
+        kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${displayText}`, `tog_r|${t.id}|${newList}|${ruleKey}`).row();
+      });
 
       // 如果是週期性任務，顯示特殊刪除選項
       if (ruleKey !== "單次" && ruleKey !== "其他") {
