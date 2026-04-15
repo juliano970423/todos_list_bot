@@ -541,18 +541,42 @@ function parseQueryLocally(queryText) {
     return { start, end, label: '明年' };
   }
 
-  // 處理 "年初" / "年底"
-  if (text === '年初' || text === '上半年') {
+  // 處理 "年初" / "年底" / "今年初" / "今年底" 等
+  if (text === '年初' || text === '上半年' || text === '今年初' || text === '今年頭' || text === '今年头') {
     const yearStart = new Date(today.getFullYear(), 0, 1);
     const yearMid = new Date(today.getFullYear(), 5, 30);
     const { start, end } = getDateRangeTaipei(yearStart, yearMid);
-    return { start, end, label: text };
+    return { start, end, label: '年初' };
   }
-  if (text === '年底' || text === '下半年') {
+  if (text === '年底' || text === '下半年' || text === '今年底') {
     const yearMid = new Date(today.getFullYear(), 6, 1);
     const yearEnd = new Date(today.getFullYear(), 11, 31);
     const { start, end } = getDateRangeTaipei(yearMid, yearEnd);
-    return { start, end, label: text };
+    return { start, end, label: '年底' };
+  }
+  if (text === '明年初' || text === '明年頭' || text === '明年头') {
+    const yearStart = new Date(today.getFullYear() + 1, 0, 1);
+    const yearMid = new Date(today.getFullYear() + 1, 5, 30);
+    const { start, end } = getDateRangeTaipei(yearStart, yearMid);
+    return { start, end, label: '明年初' };
+  }
+  if (text === '明年底') {
+    const yearMid = new Date(today.getFullYear() + 1, 6, 1);
+    const yearEnd = new Date(today.getFullYear() + 1, 11, 31);
+    const { start, end } = getDateRangeTaipei(yearMid, yearEnd);
+    return { start, end, label: '明年底' };
+  }
+  if (text === '去年初' || text === '去年頭' || text === '去年头') {
+    const yearStart = new Date(today.getFullYear() - 1, 0, 1);
+    const yearMid = new Date(today.getFullYear() - 1, 5, 30);
+    const { start, end } = getDateRangeTaipei(yearStart, yearMid);
+    return { start, end, label: '去年初' };
+  }
+  if (text === '去年底') {
+    const yearMid = new Date(today.getFullYear() - 1, 6, 1);
+    const yearEnd = new Date(today.getFullYear() - 1, 11, 31);
+    const { start, end } = getDateRangeTaipei(yearMid, yearEnd);
+    return { start, end, label: '去年底' };
   }
 
   // 處理 "X月" 格式（如 "4月"）
@@ -678,7 +702,7 @@ function parseQueryLocally(queryText) {
 
   // 先檢查輸入是否包含日期特徵，沒有的話直接返回 null
   // 包含英文月份名、中文日期關鍵詞、數字日期格式等
-  const hasDateFeature = /今天|明天|昨天|前天|後天|大前天|大後天|本週|下週|上週|本周|下周|上周|這週|这周|禮拜|本月|下月|上月|個月|週後|周後|天後|月初|月底|年初|年底|今年|去年|明年|上半年|下半年|過|幾|\d{1,2}[\/\-月]|\d{1,2}[日號]|週|周|星期|week|month|day|year|after|before|ago|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(queryText);
+  const hasDateFeature = /今天|明天|昨天|前天|後天|大前天|大後天|本週|下週|上週|本周|下周|上周|這週|这周|禮拜|本月|下月|上月|個月|週後|周後|天後|月初|月底|年初|年底|今年|去年|明年|上半年|下半年|年頭|年头|過|幾|\d{1,2}[\/\-月]|\d{1,2}[日號]|週|周|星期|week|month|day|year|after|before|ago|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(queryText);
 
   if (!hasDateFeature) {
     return null;
