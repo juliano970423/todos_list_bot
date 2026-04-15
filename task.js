@@ -265,6 +265,11 @@ async function sendConfirmation(ctx, state) {
             `🔄 規則：${ruleText}\n` +
             `🔍 來源：${state.source}`;
 
+  // 保存原始输入文本（用于 rejudge）
+  if (state.originalText) {
+    msg += `\n💬 原始輸入：<code>${state.originalText}</code>`;
+  }
+
   // 如果有 debugRaw，顯示在訊息下方 (使用單行代碼格式，避免過長)
   if (state.debugRaw) {
       msg += `\n\n🛠 <b>AI 原始數據：</b>\n<code>${state.debugRaw}</code>`;

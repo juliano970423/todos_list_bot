@@ -206,27 +206,23 @@ async function handleMessage(ctx, env) {
   if (text.startsWith('/list')) return await handleQuery(ctx, env, text, "list");
   if (text.startsWith('/history')) return await handleQuery(ctx, env, text, "history");
 
-  // 判斷是否需要 AI (包含複雜關鍵字)
-  // 增加關鍵字覆蓋率，確保 "提醒我..." 這種句子會進 AI
-  const forceAI = /每 | 到|週 | 月|年|every|daily|week|month|year|remind|提醒 | 記得 | 幫我/i.test(text);
-
-  // 嘗試本地解析 (Chrono) 作為備案或簡單句處理
+  // 優先本地解析
   const local = parseTimeLocally(text);
 
-  // 如果有複雜關鍵字，或是本地解析不出具體時間 (或者解析失敗)，就丟給 AI
-  if (forceAI || !local) {
+  if (local) {
+    // 本地解析成功
+    await sendConfirmation(ctx, {
+      task: local.task,
+      remindAt: local.utcTimestamp,
+      cronRule: null,
+      allDay: 0,
+      source: '⚡ 本地快速解析',
+      originalText: text
+    });
+  } else {
+    // 本地解析失敗，fallback 到 AI
     return await processTaskWithAI(ctx, env, text);
   }
-
-  // 本地解析成功且是簡單語句
-  await sendConfirmation(ctx, {
-    task: local.task,
-    remindAt: local.utcTimestamp,
-    cronRule: null,
-    allDay: 0,
-    source: '⚡ 本地快速解析',
-    originalText: text // Store the original input text for re-judgment
-  });
 }
 
 // --- 2. AI 處理核心 (重構版) ---
@@ -460,9 +456,12 @@ async function handleCallbackQuery(ctx, env) {
 
   // AI 重新判斷邏輯
   if (data === "rejudge") {
-    // 從原始訊息中獲取完整的任務內容
-    const match = ctx.callbackQuery.message.text.match(/內容：(.+?)\n/);
-    const taskContent = match ? match[1].trim() : "未命名任務";
+    // 優先從「原始輸入」欄位提取完整輸入
+    const originalMatch = ctx.callbackQuery.message.text.match(/原始輸入：<code>(.+?)<\/code>/);
+    const taskMatch = ctx.callbackQuery.message.text.match(/內容：(.+?)\n/);
+
+    // 使用原始輸入，如果沒有則使用任務內容
+    const taskContent = originalMatch ? originalMatch[1].trim() : (taskMatch ? taskMatch[1].trim() : "未命名任務");
 
     // Answer the callback query to prevent timeout
     await ctx.answerCallbackQuery("正在重新分析...");
@@ -474,16 +473,331 @@ async function handleCallbackQuery(ctx, env) {
     return await processTaskWithAI(ctx, env, taskContent, true); // Pass flag indicating this is a re-judgment
   }
 
-  // 管理模式
+  // 管理模式 - 主選單
   if (data === "manage_mode") {
     const results = await getTodos(env, userId, 0);
     if (!results.length) return ctx.editMessageText("📭 目前無待辦事項。");
 
     const kb = new InlineKeyboard();
-    results.forEach(t => kb.text(`⬜️ ${t.task}`, `tog|${t.id}|`).row());
-    kb.text("❌ 關閉", "cancel").text("🗑️ 刪除選取項目", "conf_del|");
+    kb.text("📋 全部任務", "manage_all|").row();
+    kb.text("📅 按日期篩選", "manage_date|").row();
+    kb.text("🔄 按規則篩選", "manage_rule|").row();
+    kb.text("❌ 關閉", "cancel");
 
-    await ctx.editMessageText("請勾選要刪除的任務：", { reply_markup: kb });
+    await ctx.editMessageText("🗑️ <b>管理模式</b>\n請選擇篩選方式：", { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 管理模式 - 全部任務
+  if (data === "manage_all|") {
+    const results = await getTodos(env, userId, 0);
+    if (!results.length) return ctx.editMessageText("📭 目前無待辦事項。");
+
+    const kb = new InlineKeyboard();
+    results.forEach(t => kb.text(`⬜️ ${t.task}`, `tog_a|${t.id}|`).row());
+    kb.text("⬅️ 返回", "manage_mode").text("🗑️ 刪除選取", "conf_del_a|").row();
+    kb.text("❌ 關閉", "cancel");
+
+    await ctx.editMessageText("📋 <b>全部任務</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 全部任務視圖下的勾選邏輯 (Toggle with All context)
+  if (data.startsWith("tog_a|")) {
+      const parts = data.split("|");
+      const tid = parts[1];
+      const sIds = parts[2];
+
+      let sSet = new Set(sIds ? sIds.split(",").filter(x => x) : []);
+      sSet.has(tid) ? sSet.delete(tid) : sSet.add(tid);
+
+      const results = await getTodos(env, userId, 0);
+      const kb = new InlineKeyboard();
+      const newList = Array.from(sSet).join(",");
+      results.forEach(t => kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${t.task}`, `tog_a|${t.id}|${newList}`).row());
+      kb.text("⬅️ 返回", "manage_mode").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del_a|${newList}`).row();
+      kb.text("❌ 關閉", "cancel");
+
+      await ctx.editMessageText("📋 <b>全部任務</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 全部任務視圖下的確認刪除
+  if (data.startsWith("conf_del_a|")) {
+      const idsStr = data.split("|")[1];
+      if (!idsStr) return ctx.answerCallbackQuery("未選擇任何任務");
+      const ids = idsStr.split(",").filter(x => x);
+      if (!ids.length) return ctx.answerCallbackQuery("未選擇任何任務");
+
+      await deleteTodosByIds(env, ids, userId);
+      await ctx.editMessageText(`🗑️ 已刪除 ${ids.length} 個任務。`);
+  }
+
+  // 管理模式 - 按日期篩選
+  if (data === "manage_date|") {
+    const results = await getTodos(env, userId, 0);
+    if (!results.length) return ctx.editMessageText("📭 目前無待辦事項。");
+
+    // 按日期分組
+    const dateGroups = {};
+    results.forEach(t => {
+      let dateKey;
+      if (t.remind_at === -1) {
+        dateKey = "無期限";
+      } else {
+        const d = new Date(t.remind_at * 1000);
+        dateKey = d.toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+      }
+      if (!dateGroups[dateKey]) dateGroups[dateKey] = [];
+      dateGroups[dateKey].push(t);
+    });
+
+    const kb = new InlineKeyboard();
+    Object.keys(dateGroups).sort().forEach(dateKey => {
+      kb.text(`📅 ${dateKey} (${dateGroups[dateKey].length})`, `md|${dateKey}`).row();
+    });
+    kb.text("⬅️ 返回", "manage_mode").text("❌ 關閉", "cancel");
+
+    await ctx.editMessageText("📅 <b>按日期篩選</b>\n請選擇日期：", { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 管理模式 - 顯示特定日期的任務
+  if (data.startsWith("md|")) {
+    const dateKey = data.substring(3);
+    const results = await getTodos(env, userId, 0);
+
+    // 篩選該日期的任務
+    const filtered = results.filter(t => {
+      if (dateKey === "無期限") return t.remind_at === -1;
+      const d = new Date(t.remind_at * 1000);
+      const taskDate = d.toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+      return taskDate === dateKey;
+    });
+
+    if (!filtered.length) {
+      return ctx.editMessageText("📭 該日期無任務。", { reply_markup: new InlineKeyboard().text("⬅️ 返回", "manage_date|") });
+    }
+
+    const kb = new InlineKeyboard();
+    // 使用 tog_d 格式保持日期上下文
+    filtered.forEach(t => kb.text(`⬜️ ${t.task}`, `tog_d|${t.id}||${dateKey}`).row());
+
+    kb.text("⬅️ 返回", "manage_date|").text("🗑️ 刪除選取", `conf_del_d||${dateKey}`).row();
+    kb.text("❌ 關閉", "cancel");
+
+    await ctx.editMessageText(`📅 <b>${dateKey} 的任務</b>\n請勾選要刪除的任務：`, { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 日期視圖下的勾選邏輯 (Toggle with Date context)
+  if (data.startsWith("tog_d|")) {
+      const parts = data.split("|");
+      const tid = parts[1];
+      const sIds = parts[2];
+      const dateKey = parts[3];
+
+      let sSet = new Set(sIds ? sIds.split(",").filter(x => x) : []);
+      sSet.has(tid) ? sSet.delete(tid) : sSet.add(tid);
+
+      const results = await getTodos(env, userId, 0);
+
+      // 篩選該日期的任務
+      const filtered = results.filter(t => {
+        if (dateKey === "無期限") return t.remind_at === -1;
+        const d = new Date(t.remind_at * 1000);
+        const taskDate = d.toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        return taskDate === dateKey;
+      });
+
+      const kb = new InlineKeyboard();
+      const newList = Array.from(sSet).join(",");
+      filtered.forEach(t => kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${t.task}`, `tog_d|${t.id}|${newList}|${dateKey}`).row());
+
+      kb.text("⬅️ 返回", "manage_date|").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del_d|${newList}|${dateKey}`).row();
+      kb.text("❌ 關閉", "cancel");
+
+      await ctx.editMessageText(`📅 <b>${dateKey} 的任務</b>\n請勾選要刪除的任務：`, { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 日期視圖下的確認刪除
+  if (data.startsWith("conf_del_d|")) {
+      const parts = data.split("|");
+      const idsStr = parts[1];
+      const dateKey = parts[2];
+
+      if (!idsStr) return ctx.answerCallbackQuery("未選擇任何任務");
+      const ids = idsStr.split(",").filter(x => x);
+      if (!ids.length) return ctx.answerCallbackQuery("未選擇任何任務");
+
+      await deleteTodosByIds(env, ids, userId);
+      await ctx.editMessageText(`🗑️ 已刪除 ${ids.length} 個任務。`);
+  }
+
+  // 管理模式 - 按規則篩選
+  if (data === "manage_rule|") {
+    const results = await getTodos(env, userId, 0);
+    if (!results.length) return ctx.editMessageText("📭 目前無待辦事項。");
+
+    // 按規則分組
+    const ruleGroups = { "單次": [], "每天": [], "每週": [], "每月": [], "每年": [], "其他": [] };
+
+    results.forEach(t => {
+      const rule = t.cron_rule;
+      if (!rule || rule === 'none' || rule === 'null') {
+        ruleGroups["單次"].push(t);
+      } else if (rule === 'daily') {
+        ruleGroups["每天"].push(t);
+      } else if (rule.startsWith('weekly:')) {
+        ruleGroups["每週"].push(t);
+      } else if (rule.startsWith('monthly:')) {
+        ruleGroups["每月"].push(t);
+      } else if (rule.startsWith('yearly:')) {
+        ruleGroups["每年"].push(t);
+      } else {
+        ruleGroups["其他"].push(t);
+      }
+    });
+
+    const kb = new InlineKeyboard();
+    Object.keys(ruleGroups).forEach(ruleKey => {
+      if (ruleGroups[ruleKey].length > 0) {
+        kb.text(`🔄 ${ruleKey} (${ruleGroups[ruleKey].length})`, `mr|${ruleKey}`).row();
+      }
+    });
+    kb.text("⬅️ 返回", "manage_mode").text("❌ 關閉", "cancel");
+
+    await ctx.editMessageText("🔄 <b>按規則篩選</b>\n請選擇規則類型：", { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 管理模式 - 顯示特定規則的任務
+  if (data.startsWith("mr|")) {
+    const ruleKey = data.substring(3);
+    const results = await getTodos(env, userId, 0);
+
+    // 篩選該規則的任務
+    const filtered = results.filter(t => {
+      const rule = t.cron_rule;
+      if (ruleKey === "單次") return !rule || rule === 'none' || rule === 'null';
+      if (ruleKey === "每天") return rule === 'daily';
+      if (ruleKey === "每週") return rule && rule.startsWith('weekly:');
+      if (ruleKey === "每月") return rule && rule.startsWith('monthly:');
+      if (ruleKey === "每年") return rule && rule.startsWith('yearly:');
+      if (ruleKey === "其他") return rule && !['daily'].includes(rule) && !rule.startsWith('weekly:') && !rule.startsWith('monthly:') && !rule.startsWith('yearly:');
+      return false;
+    });
+
+    if (!filtered.length) {
+      return ctx.editMessageText("📭 該規則無任務。", { reply_markup: new InlineKeyboard().text("⬅️ 返回", "manage_rule|") });
+    }
+
+    const kb = new InlineKeyboard();
+    // 使用 tog_r 格式保持规则上下文
+    filtered.forEach(t => kb.text(`⬜️ ${t.task}`, `tog_r|${t.id}||${ruleKey}`).row());
+
+    // 如果是週期性任務，顯示特殊刪除選項
+    if (ruleKey !== "單次" && ruleKey !== "其他") {
+      kb.text("🗑️ 刪除此時間點", `del_time||${ruleKey}`).row();
+      kb.text("🗑️ 刪除整個規則", `del_rule||${ruleKey}`).row();
+    } else {
+      kb.text("🗑️ 刪除選取", `conf_del_r||${ruleKey}`).row();
+    }
+    kb.text("⬅️ 返回", "manage_rule|").text("❌ 關閉", "cancel");
+
+    await ctx.editMessageText(`🔄 <b>${ruleKey}任務</b>\n請選擇操作：`, { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 規則視圖下的勾選邏輯 (Toggle with Rule context)
+  if (data.startsWith("tog_r|")) {
+      const parts = data.split("|");
+      const tid = parts[1];
+      const sIds = parts[2];
+      const ruleKey = parts[3];
+
+      let sSet = new Set(sIds ? sIds.split(",").filter(x => x) : []);
+      sSet.has(tid) ? sSet.delete(tid) : sSet.add(tid);
+
+      const results = await getTodos(env, userId, 0);
+
+      // 篩選該規則的任務
+      const filtered = results.filter(t => {
+        const rule = t.cron_rule;
+        if (ruleKey === "單次") return !rule || rule === 'none' || rule === 'null';
+        if (ruleKey === "每天") return rule === 'daily';
+        if (ruleKey === "每週") return rule && rule.startsWith('weekly:');
+        if (ruleKey === "每月") return rule && rule.startsWith('monthly:');
+        if (ruleKey === "每年") return rule && rule.startsWith('yearly:');
+        if (ruleKey === "其他") return rule && !['daily'].includes(rule) && !rule.startsWith('weekly:') && !rule.startsWith('monthly:') && !rule.startsWith('yearly:');
+        return false;
+      });
+
+      const kb = new InlineKeyboard();
+      const newList = Array.from(sSet).join(",");
+      filtered.forEach(t => kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${t.task}`, `tog_r|${t.id}|${newList}|${ruleKey}`).row());
+
+      // 如果是週期性任務，顯示特殊刪除選項
+      if (ruleKey !== "單次" && ruleKey !== "其他") {
+        kb.text("🗑️ 刪除此時間點", `del_time|${newList}|${ruleKey}`).row();
+        kb.text("🗑️ 刪除整個規則", `del_rule|${newList}|${ruleKey}`).row();
+      } else {
+        kb.text("🗑️ 刪除選取", `conf_del_r|${newList}|${ruleKey}`).row();
+      }
+      kb.text("⬅️ 返回", "manage_rule|").text("❌ 關閉", "cancel");
+
+      await ctx.editMessageText(`🔄 <b>${ruleKey}任務</b>\n請勾選要刪除的任務：`, { parse_mode: "HTML", reply_markup: kb });
+  }
+
+  // 刪除此時間點（針對週期性任務）
+  if (data.startsWith("del_time|")) {
+    const parts = data.split("|");
+    const idsStr = parts[1];
+    const selectedIds = idsStr ? idsStr.split(",").filter(x => x) : [];
+
+    if (!selectedIds.length) {
+      return ctx.answerCallbackQuery("請先勾選任務");
+    }
+
+    // 只刪除選中的任務（單次刪除，不影響週期規則）
+    await deleteTodosByIds(env, selectedIds, userId);
+    await ctx.editMessageText(`🗑️ 已刪除 ${selectedIds.length} 個任務（僅此時間點）。`, { parse_mode: "HTML" });
+  }
+
+  // 刪除整個規則（針對週期性任務）
+  if (data.startsWith("del_rule|")) {
+    const parts = data.split("|");
+    const idsStr = parts[1];
+    const selectedIds = idsStr ? idsStr.split(",").filter(x => x) : [];
+
+    if (!selectedIds.length) {
+      return ctx.answerCallbackQuery("請先勾選任務");
+    }
+
+    const results = await getTodos(env, userId, 0);
+
+    // 獲取選中任務的規則，並刪除所有相同規則的任務
+    const selectedTasks = results.filter(t => selectedIds.includes(t.id.toString()));
+    const rulesToDelete = [...new Set(selectedTasks.map(t => t.cron_rule).filter(r => r && r !== 'none' && r !== 'null'))];
+
+    if (!rulesToDelete.length) {
+      // 如果沒有週期規則，就只刪除選中的
+      await deleteTodosByIds(env, selectedIds, userId);
+      await ctx.editMessageText(`🗑️ 已刪除 ${selectedIds.length} 個任務。`, { parse_mode: "HTML" });
+    } else {
+      // 刪除所有符合這些規則的任務
+      const tasksWithSameRule = results.filter(t => rulesToDelete.includes(t.cron_rule));
+      const idsToDelete = tasksWithSameRule.map(t => t.id);
+      await deleteTodosByIds(env, idsToDelete, userId);
+      await ctx.editMessageText(`🗑️ 已刪除 ${idsToDelete.length} 個任務（整個規則）。`, { parse_mode: "HTML" });
+    }
+  }
+
+  // 規則視圖下的確認刪除
+  if (data.startsWith("conf_del_r|")) {
+      const parts = data.split("|");
+      const idsStr = parts[1];
+      const ruleKey = parts[2];
+
+      if (!idsStr) return ctx.answerCallbackQuery("未選擇任何任務");
+      const ids = idsStr.split(",").filter(x => x);
+      if (!ids.length) return ctx.answerCallbackQuery("未選擇任何任務");
+
+      await deleteTodosByIds(env, ids, userId);
+      await ctx.editMessageText(`🗑️ 已刪除 ${ids.length} 個任務。`);
   }
 
   // 勾選邏輯 (Toggle)
