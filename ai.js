@@ -413,6 +413,21 @@ function parseQueryLocally(queryText) {
     return { start, end, label: '本月' };
   }
 
+  // 處理 "X月" 格式（如 "4月"）
+  const monthMatch = text.match(/^(\d{1,2})月$/);
+  if (monthMatch) {
+    const month = parseInt(monthMatch[1]);
+    let year = today.getFullYear();
+    // 如果月份已過，則查詢明年
+    if (month < today.getMonth() + 1) {
+      year += 1;
+    }
+    const monthStart = new Date(year, month - 1, 1);
+    const monthEnd = new Date(year, month, 0);
+    const { start, end } = getDateRangeTaipei(monthStart, monthEnd);
+    return { start, end, label: `${month}月` };
+  }
+
   // 處理 "這週X" / "本週X" / "this X"
   const thisWeekdayMatch = text.match(/(?:這週|本週|this)\s*([0-6]|週?[一二三四五六日]|sun|mon|tue|wed|thu|fri|sat)/i);
   if (thisWeekdayMatch) {
