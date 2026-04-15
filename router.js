@@ -552,6 +552,13 @@ async function handleCallbackQuery(ctx, env) {
 
     if (!filtered.length) return ctx.editMessageText("😿 喵～該範圍沒有待辦事項呢～");
 
+    // 排序：先發生的在前面，無期限(-1)放最後
+    filtered.sort((a, b) => {
+      if (a.remind_at === -1) return 1;
+      if (b.remind_at === -1) return -1;
+      return a.remind_at - b.remind_at;
+    });
+
     const kb = new InlineKeyboard();
     filtered.forEach(t => {
       // 顯示日期 + 任務名稱
@@ -654,6 +661,13 @@ async function handleCallbackQuery(ctx, env) {
     const results = await getTodos(env, userId, 0);
     if (!results.length) return ctx.editMessageText("😿 喵～目前沒有待辦事項呢～");
 
+    // 排序：先發生的在前面，無期限(-1)放最後
+    results.sort((a, b) => {
+      if (a.remind_at === -1) return 1;
+      if (b.remind_at === -1) return -1;
+      return a.remind_at - b.remind_at;
+    });
+
     const kb = new InlineKeyboard();
     results.forEach(t => {
       let displayText = t.task;
@@ -754,6 +768,13 @@ async function handleCallbackQuery(ctx, env) {
     if (!filtered.length) {
       return ctx.editMessageText("😿 喵～該日期無任務。", { reply_markup: new InlineKeyboard().text("⬅️ 返回", "manage_date|") });
     }
+
+    // 排序
+    filtered.sort((a, b) => {
+      if (a.remind_at === -1) return 1;
+      if (b.remind_at === -1) return -1;
+      return a.remind_at - b.remind_at;
+    });
 
     const kb = new InlineKeyboard();
     filtered.forEach(t => {
@@ -882,6 +903,13 @@ async function handleCallbackQuery(ctx, env) {
     if (!filtered.length) {
       return ctx.editMessageText("😿 喵～該規則無任務。", { reply_markup: new InlineKeyboard().text("⬅️ 返回", "manage_rule|") });
     }
+
+    // 排序
+    filtered.sort((a, b) => {
+      if (a.remind_at === -1) return 1;
+      if (b.remind_at === -1) return -1;
+      return a.remind_at - b.remind_at;
+    });
 
     const kb = new InlineKeyboard();
     filtered.forEach(t => {

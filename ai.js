@@ -428,6 +428,35 @@ function parseQueryLocally(queryText) {
     return { start, end, label: `${month}月` };
   }
 
+  // 處理英文月份名（如 "april", "April"）
+  const englishMonthMap = {
+    'january': 1, 'jan': 1,
+    'february': 2, 'feb': 2,
+    'march': 3, 'mar': 3,
+    'april': 4, 'apr': 4,
+    'may': 5,
+    'june': 6, 'jun': 6,
+    'july': 7, 'jul': 7,
+    'august': 8, 'aug': 8,
+    'september': 9, 'sep': 9, 'sept': 9,
+    'october': 10, 'oct': 10,
+    'november': 11, 'nov': 11,
+    'december': 12, 'dec': 12
+  };
+  const englishMonthMatch = text.match(/^(this\s+)?(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|sept|october|oct|november|nov|december|dec)$/i);
+  if (englishMonthMatch) {
+    const month = englishMonthMap[englishMonthMatch[2].toLowerCase()];
+    let year = today.getFullYear();
+    // 如果月份已過，則查詢明年
+    if (month < today.getMonth() + 1) {
+      year += 1;
+    }
+    const monthStart = new Date(year, month - 1, 1);
+    const monthEnd = new Date(year, month, 0);
+    const { start, end } = getDateRangeTaipei(monthStart, monthEnd);
+    return { start, end, label: `${month}月` };
+  }
+
   // 處理 "這週X" / "本週X" / "this X"
   const thisWeekdayMatch = text.match(/(?:這週|本週|this)\s*([0-6]|週?[一二三四五六日]|sun|mon|tue|wed|thu|fri|sat)/i);
   if (thisWeekdayMatch) {
@@ -506,7 +535,8 @@ function parseQueryLocally(queryText) {
   }
 
   // 先檢查輸入是否包含日期特徵，沒有的話直接返回 null
-  const hasDateFeature = /今天|明天|昨天|本週|下週|本月|\d{1,2}[\/\-月]|\d{1,2}[日號]|週|week|day|after|before/i.test(queryText);
+  // 包含英文月份名、中文日期關鍵詞、數字日期格式等
+  const hasDateFeature = /今天|明天|昨天|本週|下週|本月|\d{1,2}[\/\-月]|\d{1,2}[日號]|週|week|day|after|before|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(queryText);
 
   if (!hasDateFeature) {
     return null;
