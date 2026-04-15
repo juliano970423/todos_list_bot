@@ -186,27 +186,55 @@ function parseTimeLocally(text) {
   // 清理輸入文本
   const cleanText = text.replace(/提醒我|記得|幫我|remind me/gi, "").trim();
 
-  // ====== 1. 中文日期匹配 ======
+  // ====== 1. 具體日期匹配 (M/D, M月D日, MM-DD 等) ======
+
+  // M月D日 格式
+  const monthDayMatch = cleanText.match(/(\d{1,2})月(\d{1,2})[日號]?/);
+  if (monthDayMatch && !parsedDate) {
+    const month = parseInt(monthDayMatch[1]);
+    const day = parseInt(monthDayMatch[2]);
+    parsedDate = new Date(refDate);
+    parsedDate.setMonth(month - 1, day);
+    if (parsedDate < refDate) {
+      parsedDate.setFullYear(parsedDate.getFullYear() + 1);
+    }
+    matchedText = monthDayMatch[0];
+  }
+
+  // M/D 或 MM/DD 格式
+  const slashDateMatch = cleanText.match(/(\d{1,2})\/(\d{1,2})/);
+  if (slashDateMatch && !parsedDate) {
+    const month = parseInt(slashDateMatch[1]);
+    const day = parseInt(slashDateMatch[2]);
+    parsedDate = new Date(refDate);
+    parsedDate.setMonth(month - 1, day);
+    if (parsedDate < refDate) {
+      parsedDate.setFullYear(parsedDate.getFullYear() + 1);
+    }
+    matchedText = slashDateMatch[0];
+  }
+
+  // ====== 2. 中文相對日期匹配 ======
 
   // 今天
-  if (/今天|today/i.test(cleanText)) {
+  if (/今天|today/i.test(cleanText) && !parsedDate) {
     parsedDate = new Date(refDate);
     matchedText = cleanText.match(/今天|today/i)?.[0] || "";
   }
   // 明天
-  else if (/明天|tomorrow/i.test(cleanText)) {
+  else if (/明天|tomorrow/i.test(cleanText) && !parsedDate) {
     parsedDate = new Date(refDate);
     parsedDate.setDate(parsedDate.getDate() + 1);
     matchedText = cleanText.match(/明天|tomorrow/i)?.[0] || "";
   }
   // 後天
-  else if (/後天/i.test(cleanText)) {
+  else if (/後天/i.test(cleanText) && !parsedDate) {
     parsedDate = new Date(refDate);
     parsedDate.setDate(parsedDate.getDate() + 2);
     matchedText = "後天";
   }
   // N天後
-  else if (/(\d+)\s*天後/i.test(cleanText)) {
+  else if (/(\d+)\s*天後/i.test(cleanText) && !parsedDate) {
     const match = cleanText.match(/(\d+)\s*天後/i);
     const days = parseInt(match[1]);
     parsedDate = new Date(refDate);
@@ -214,7 +242,7 @@ function parseTimeLocally(text) {
     matchedText = match[0];
   }
   // N週後
-  else if (/(\d+)\s*週後|(\d+)\s*周後/i.test(cleanText)) {
+  else if (/(\d+)\s*[週周]後/i.test(cleanText) && !parsedDate) {
     const match = cleanText.match(/(\d+)\s*[週周]後/i);
     const weeks = parseInt(match[1]);
     parsedDate = new Date(refDate);
@@ -222,7 +250,7 @@ function parseTimeLocally(text) {
     matchedText = match[0];
   }
   // 下週X / 下周X
-  else if (/下[週周]([一二三四五六日天])/i.test(cleanText)) {
+  else if (/下[週周]([一二三四五六日天])/i.test(cleanText) && !parsedDate) {
     const match = cleanText.match(/下[週周]([一二三四五六日天])/i);
     const dayMap = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 7, '天': 7 };
     const targetDay = dayMap[match[1]];
@@ -233,61 +261,58 @@ function parseTimeLocally(text) {
     matchedText = match[0];
   }
   // 這週X / 这週X / 本週X
-  else if (/(?:這|这|本)[週周]([一二三四五六日天])/i.test(cleanText)) {
+  else if (/(?:這|这|本)[週周]([一二三四五六日天])/i.test(cleanText) && !parsedDate) {
     const match = cleanText.match(/(?:這|这|本)[週周]([一二三四五六日天])/i);
     const dayMap = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 7, '天': 7 };
     const targetDay = dayMap[match[1]];
     const currentDay = refDate.getDay() === 0 ? 7 : refDate.getDay();
     let daysUntil = targetDay - currentDay;
-    if (daysUntil <= 0) daysUntil += 7; // 如果已過，跳到下週
+    if (daysUntil <= 0) daysUntil += 7;
     parsedDate = new Date(refDate);
     parsedDate.setDate(parsedDate.getDate() + daysUntil);
     matchedText = match[0];
   }
-  // 本週 / 這週
-  else if (/本[週周]|這[週周]|这[週周]/i.test(cleanText)) {
-    parsedDate = new Date(refDate);
-    matchedText = cleanText.match(/本[週周]|這[週周]|这[週周]/i)?.[0] || "";
-  }
-  // 下週 / 下周
-  else if (/下[週周]/i.test(cleanText)) {
-    parsedDate = new Date(refDate);
-    parsedDate.setDate(parsedDate.getDate() + 7);
-    matchedText = cleanText.match(/下[週周]/i)?.[0] || "";
-  }
 
-  // ====== 2. 中文時間匹配 ======
+  // ====== 3. 中文時間匹配 ======
 
   // 如果已經匹配到日期，嘗試匹配時間
   if (parsedDate) {
-    // 晚上/晚 X點:分
-    const eveningMatch = cleanText.match(/晚上?|晚/i);
-    const morningMatch = cleanText.match(/早上?|上午|早/i);
-    const afternoonMatch = cleanText.match(/下午|午後/i);
-    const timeMatch = cleanText.match(/(\d{1,2})[點点時](\d{1,2})?[分]?|(\d{1,2}):(\d{2})/i);
+    // 上午/早上/早 X點
+    const morningMatch = cleanText.match(/上午|早上?|早/);
+    // 下午/午後 X點
+    const afternoonMatch = cleanText.match(/下午|午後/);
+    // 晚上/晚 X點
+    const eveningMatch = cleanText.match(/晚上?|晚/);
+
+    // X點X分 或 X點 或 X:XX
+    const timeMatch = cleanText.match(/(\d{1,2})[點点時](\d{1,2})?[分]?|(\d{1,2}):(\d{2})/);
 
     if (timeMatch) {
       let hour = parseInt(timeMatch[1] || timeMatch[3]);
       const minute = parseInt(timeMatch[2] || timeMatch[4] || 0);
 
       // 處理 12小時制
-      if (eveningMatch && hour < 12) {
-        hour += 12;
-      } else if (morningMatch && hour === 12) {
-        hour = 0;
-      } else if (afternoonMatch && hour < 12) {
-        hour += 12;
+      if (morningMatch) {
+        // 上午：12點 = 0點，其他不變
+        if (hour === 12) hour = 0;
+      } else if (afternoonMatch) {
+        // 下午：小於12的加12
+        if (hour < 12) hour += 12;
+      } else if (eveningMatch) {
+        // 晚上：小於12的加12
+        if (hour < 12) hour += 12;
       }
 
       parsedDate.setHours(hour, minute, 0, 0);
-      matchedText += " " + (timeMatch[0] || "");
+      matchedText += " " + (morningMatch?.[0] || afternoonMatch?.[0] || eveningMatch?.[0] || "") + " " + (timeMatch[0] || "");
+      matchedText = matchedText.trim();
     } else {
-      // 沒有具體時間，設為全天
-      parsedDate.setHours(12, 0, 0, 0); // 中午作為全天任務的預設時間
+      // 沒有具體時間，設為全天（中午）
+      parsedDate.setHours(12, 0, 0, 0);
     }
   }
 
-  // ====== 3. Fallback 到 chrono ======
+  // ====== 4. Fallback 到 chrono ======
 
   if (!parsedDate) {
     const results = chrono.parse(cleanText, refDate, { forwardDate: true });
@@ -298,16 +323,18 @@ function parseTimeLocally(text) {
     }
   }
 
-  // ====== 4. 返回結果 ======
+  // ====== 5. 返回結果 ======
 
   if (!parsedDate) return null;
 
   // 提取任務名稱（移除時間相關文字）
   let task = cleanText
     .replace(matchedText, "")
-    .replace(/今天|明天|後天|晚上?|早上?|上午|下午|[\d]+[點点時分]/gi, "")
+    .replace(/今天|明天|後天|晚上?|早上?|上午|下午|午後/gi, "")
+    .replace(/\d{1,2}[月\/]\d{1,2}[日號]?/gi, "")
+    .replace(/[\d]+[點点時分]/gi, "")
     .replace(/下[週周][一二三四五六日天]?|這[週周][一二三四五六日天]?|本[週周][一二三四五六日天]?/gi, "")
-    .replace(/\d+\s*天後|\d+\s*週後/gi, "")
+    .replace(/\d+\s*天後|\d+\s*[週周]後/gi, "")
     .trim();
 
   if (!task) task = "未命名任務";

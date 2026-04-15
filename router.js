@@ -456,12 +456,32 @@ async function handleCallbackQuery(ctx, env) {
 
   // AI 重新判斷邏輯
   if (data === "rejudge") {
-    // 優先從「原始輸入」欄位提取完整輸入
-    const originalMatch = ctx.callbackQuery.message.text.match(/原始輸入：<code>(.+?)<\/code>/);
-    const taskMatch = ctx.callbackQuery.message.text.match(/內容：(.+?)\n/);
+    const msgText = ctx.callbackQuery.message.text;
 
-    // 使用原始輸入，如果沒有則使用任務內容
-    const taskContent = originalMatch ? originalMatch[1].trim() : (taskMatch ? taskMatch[1].trim() : "未命名任務");
+    // 優先從「原始輸入」欄位提取完整輸入
+    // 使用多種正則嘗試匹配
+    let originalInput = null;
+
+    // 嘗試匹配 <code> 標籤內的內容
+    const codeMatch = msgText.match(/原始輸入：\s*<code>([^<]+)<\/code>/);
+    if (codeMatch) {
+      originalInput = codeMatch[1].trim();
+    }
+
+    // 如果沒有找到，嘗試另一種格式
+    if (!originalInput) {
+      const altMatch = msgText.match(/原始輸入：(.+?)(?:\n|🛠|$)/);
+      if (altMatch) {
+        originalInput = altMatch[1].replace(/<[^>]+>/g, "").trim();
+      }
+    }
+
+    // 如果仍然沒有，從任務內容提取
+    const taskMatch = msgText.match(/內容：(.+?)\n/);
+    const taskContent = originalInput || (taskMatch ? taskMatch[1].trim() : "未命名任務");
+
+    console.log("[DEBUG] rejudge - originalInput:", originalInput);
+    console.log("[DEBUG] rejudge - taskContent:", taskContent);
 
     // Answer the callback query to prevent timeout
     await ctx.answerCallbackQuery("正在重新分析...");
@@ -470,7 +490,7 @@ async function handleCallbackQuery(ctx, env) {
     await ctx.editMessageText("🤖 正在重新分析您的請求...");
 
     // Process the task content again with AI
-    return await processTaskWithAI(ctx, env, taskContent, true); // Pass flag indicating this is a re-judgment
+    return await processTaskWithAI(ctx, env, taskContent, true);
   }
 
   // 管理模式 - 主選單
