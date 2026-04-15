@@ -230,7 +230,7 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
   let waitMsg;
 
   if (!isRejudgment) {
-    waitMsg = await ctx.reply("🤖 正在思考與解析...");
+    waitMsg = await ctx.reply("🤖 喵～正在思考與解析中...");
   }
 
   const refDate = getNowTaipei();
@@ -299,7 +299,7 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
   } catch (e) {
     console.error("AI 處理錯誤:", e);
     // 發生錯誤時，回傳完整的錯誤訊息與原始資料供排查
-    const errorMsg = `⚠️ <b>解析發生錯誤</b>\n\n` +
+    const errorMsg = `⚠️ <b>喵嗚～解析發生錯誤了</b>\n\n` +
                      `❌ <b>錯誤原因：</b> ${e.message}\n` +
                      `📄 <b>原始回應：</b>\n<pre>${e.rawContent || "無內容"}</pre>`;
 
@@ -328,9 +328,9 @@ async function handleQuery(ctx, env, text, mode) {
     const userId = ctx.from.id.toString();
     try {
       await deleteTodosByStatus(env, userId, 1); // 刪除 status=1 的歷史記錄
-      return await ctx.reply("🗑️ 已清空所有歷史記錄。", { parse_mode: "HTML" });
+      return await ctx.reply("🗑️ 喵～已清空所有歷史記錄！", { parse_mode: "HTML" });
     } catch (e) {
-      return await ctx.reply(`❌ 清空歷史記錄失敗：${e.message}`, { parse_mode: "HTML" });
+      return await ctx.reply(`❌ 喵嗚～清空歷史記錄失敗：${e.message}`, { parse_mode: "HTML" });
     }
   }
 
@@ -381,7 +381,7 @@ async function handleQuery(ctx, env, text, mode) {
   }
 
   // 本地解析失敗，使用 AI
-  const waitMsg = await ctx.reply("🔍 查詢範圍中...");
+  const waitMsg = await ctx.reply("🔍 喵～查詢範圍中...");
   const now = getNowTaipei();
 
   try {
@@ -411,14 +411,14 @@ async function handleQuery(ctx, env, text, mode) {
       }
     } else {
       // 如果本地解析也失敗，回退到顯示錯誤
-      await ctx.reply(`❌ 無法解析時間範圍：${json.timeExpression}`, { parse_mode: "HTML" });
+      await ctx.reply(`❌ 喵嗚～無法解析時間範圍：${json.timeExpression}`, { parse_mode: "HTML" });
     }
   } catch (e) {
     // 直接報告錯誤，不進行任何包裝
     console.error("AI Query Error:", e);
 
     // 直接顯示原始錯誤資訊（技術性）
-    const errorMsg = `❌ ERROR\n\n` +
+    const errorMsg = `❌ 喵嗚～查詢出錯了\n\n` +
                      `<code>${e.name}: ${e.message}</code>\n` +
                      `${e.stack ? `\nStack:\n<code>${e.stack}</code>` : ''}\n` +
                      `${e.rawContent ? `\nRaw response (first 200 chars):\n<code>${e.rawContent.substring(0, 200)}</code>` : ''}`;
@@ -437,7 +437,7 @@ async function handleCallbackQuery(ctx, env) {
   const data = ctx.callbackQuery.data;
   const userId = ctx.from.id.toString();
 
-  if (data === "cancel") return ctx.editMessageText("已取消操作。");
+  if (data === "cancel") return ctx.editMessageText("喵～已取消操作。");
 
   // 儲存邏輯
   if (data.startsWith("sv|")) {
@@ -448,9 +448,9 @@ async function handleCallbackQuery(ctx, env) {
 
     try {
       await addTodo(env, userId, taskName, ts, rule, allDay);
-      return ctx.editMessageText(`✅ 已儲存任務：<b>${taskName}</b>`, { parse_mode: "HTML" });
+      return ctx.editMessageText(`✅ 喵～已儲存任務：<b>${taskName}</b>`, { parse_mode: "HTML" });
     } catch (e) {
-      return ctx.editMessageText(`❌ 資庫錯誤：${e.message}`);
+      return ctx.editMessageText(`❌ 喵嗚～資料庫錯誤：${e.message}`);
     }
   }
 
@@ -484,10 +484,10 @@ async function handleCallbackQuery(ctx, env) {
     console.log("[DEBUG] rejudge - taskContent:", taskContent);
 
     // Answer the callback query to prevent timeout
-    await ctx.answerCallbackQuery("正在重新分析...");
+    await ctx.answerCallbackQuery("喵～正在重新分析...");
 
     // Edit the message to show processing status
-    await ctx.editMessageText("🤖 正在重新分析您的請求...");
+    await ctx.editMessageText("🤖 喵～正在重新分析您的請求...");
 
     // Process the task content again with AI
     return await processTaskWithAI(ctx, env, taskContent, true);
@@ -496,7 +496,7 @@ async function handleCallbackQuery(ctx, env) {
   // 管理模式 - 主選單
   if (data === "manage_mode") {
     const results = await getTodos(env, userId, 0);
-    if (!results.length) return ctx.editMessageText("📭 目前無待辦事項。");
+    if (!results.length) return ctx.editMessageText("😿 喵～目前沒有待辦事項呢～");
 
     const kb = new InlineKeyboard();
     kb.text("📋 全部任務", "manage_all|").row();
@@ -504,20 +504,20 @@ async function handleCallbackQuery(ctx, env) {
     kb.text("🔄 按規則篩選", "manage_rule|").row();
     kb.text("❌ 關閉", "cancel");
 
-    await ctx.editMessageText("🗑️ <b>管理模式</b>\n請選擇篩選方式：", { parse_mode: "HTML", reply_markup: kb });
+    await ctx.editMessageText("🗑️ <b>管理喵～</b>\n請選擇篩選方式：", { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 管理模式 - 全部任務
   if (data === "manage_all|") {
     const results = await getTodos(env, userId, 0);
-    if (!results.length) return ctx.editMessageText("📭 目前無待辦事項。");
+    if (!results.length) return ctx.editMessageText("😿 喵～目前沒有待辦事項呢～");
 
     const kb = new InlineKeyboard();
     results.forEach(t => kb.text(`⬜️ ${t.task}`, `tog_a|${t.id}|`).row());
     kb.text("⬅️ 返回", "manage_mode").text("🗑️ 刪除選取", "conf_del_a|").row();
     kb.text("❌ 關閉", "cancel");
 
-    await ctx.editMessageText("📋 <b>全部任務</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
+    await ctx.editMessageText("📋 <b>全部任務喵～</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 全部任務視圖下的勾選邏輯 (Toggle with All context)
@@ -536,24 +536,24 @@ async function handleCallbackQuery(ctx, env) {
       kb.text("⬅️ 返回", "manage_mode").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del_a|${newList}`).row();
       kb.text("❌ 關閉", "cancel");
 
-      await ctx.editMessageText("📋 <b>全部任務</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
+      await ctx.editMessageText("📋 <b>全部任務喵～</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 全部任務視圖下的確認刪除
   if (data.startsWith("conf_del_a|")) {
       const idsStr = data.split("|")[1];
-      if (!idsStr) return ctx.answerCallbackQuery("未選擇任何任務");
+      if (!idsStr) return ctx.answerCallbackQuery("喵～未選擇任何任務");
       const ids = idsStr.split(",").filter(x => x);
-      if (!ids.length) return ctx.answerCallbackQuery("未選擇任何任務");
+      if (!ids.length) return ctx.answerCallbackQuery("喵～未選擇任何任務");
 
       await deleteTodosByIds(env, ids, userId);
-      await ctx.editMessageText(`🗑️ 已刪除 ${ids.length} 個任務。`);
+      await ctx.editMessageText(`🗑️ 喵～已刪除 ${ids.length} 個任務！`);
   }
 
   // 管理模式 - 按日期篩選
   if (data === "manage_date|") {
     const results = await getTodos(env, userId, 0);
-    if (!results.length) return ctx.editMessageText("📭 目前無待辦事項。");
+    if (!results.length) return ctx.editMessageText("😿 喵～目前沒有待辦事項呢～");
 
     // 按日期分組
     const dateGroups = {};
@@ -575,7 +575,7 @@ async function handleCallbackQuery(ctx, env) {
     });
     kb.text("⬅️ 返回", "manage_mode").text("❌ 關閉", "cancel");
 
-    await ctx.editMessageText("📅 <b>按日期篩選</b>\n請選擇日期：", { parse_mode: "HTML", reply_markup: kb });
+    await ctx.editMessageText("📅 <b>按日期篩選喵～</b>\n請選擇日期：", { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 管理模式 - 顯示特定日期的任務
@@ -592,7 +592,7 @@ async function handleCallbackQuery(ctx, env) {
     });
 
     if (!filtered.length) {
-      return ctx.editMessageText("📭 該日期無任務。", { reply_markup: new InlineKeyboard().text("⬅️ 返回", "manage_date|") });
+      return ctx.editMessageText("😿 喵～該日期無任務。", { reply_markup: new InlineKeyboard().text("⬅️ 返回", "manage_date|") });
     }
 
     const kb = new InlineKeyboard();
@@ -602,7 +602,7 @@ async function handleCallbackQuery(ctx, env) {
     kb.text("⬅️ 返回", "manage_date|").text("🗑️ 刪除選取", `conf_del_d||${dateKey}`).row();
     kb.text("❌ 關閉", "cancel");
 
-    await ctx.editMessageText(`📅 <b>${dateKey} 的任務</b>\n請勾選要刪除的任務：`, { parse_mode: "HTML", reply_markup: kb });
+    await ctx.editMessageText(`📅 <b>${dateKey} 的任務喵～</b>\n請勾選要刪除的任務：`, { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 日期視圖下的勾選邏輯 (Toggle with Date context)
@@ -632,7 +632,7 @@ async function handleCallbackQuery(ctx, env) {
       kb.text("⬅️ 返回", "manage_date|").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del_d|${newList}|${dateKey}`).row();
       kb.text("❌ 關閉", "cancel");
 
-      await ctx.editMessageText(`📅 <b>${dateKey} 的任務</b>\n請勾選要刪除的任務：`, { parse_mode: "HTML", reply_markup: kb });
+      await ctx.editMessageText(`📅 <b>${dateKey} 的任務喵～</b>\n請勾選要刪除的任務：`, { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 日期視圖下的確認刪除
@@ -641,18 +641,18 @@ async function handleCallbackQuery(ctx, env) {
       const idsStr = parts[1];
       const dateKey = parts[2];
 
-      if (!idsStr) return ctx.answerCallbackQuery("未選擇任何任務");
+      if (!idsStr) return ctx.answerCallbackQuery("喵～未選擇任何任務");
       const ids = idsStr.split(",").filter(x => x);
-      if (!ids.length) return ctx.answerCallbackQuery("未選擇任何任務");
+      if (!ids.length) return ctx.answerCallbackQuery("喵～未選擇任何任務");
 
       await deleteTodosByIds(env, ids, userId);
-      await ctx.editMessageText(`🗑️ 已刪除 ${ids.length} 個任務。`);
+      await ctx.editMessageText(`🗑️ 喵～已刪除 ${ids.length} 個任務！`);
   }
 
   // 管理模式 - 按規則篩選
   if (data === "manage_rule|") {
     const results = await getTodos(env, userId, 0);
-    if (!results.length) return ctx.editMessageText("📭 目前無待辦事項。");
+    if (!results.length) return ctx.editMessageText("😿 喵～目前沒有待辦事項呢～");
 
     // 按規則分組
     const ruleGroups = { "單次": [], "每天": [], "每週": [], "每月": [], "每年": [], "其他": [] };
@@ -682,7 +682,7 @@ async function handleCallbackQuery(ctx, env) {
     });
     kb.text("⬅️ 返回", "manage_mode").text("❌ 關閉", "cancel");
 
-    await ctx.editMessageText("🔄 <b>按規則篩選</b>\n請選擇規則類型：", { parse_mode: "HTML", reply_markup: kb });
+    await ctx.editMessageText("🔄 <b>按規則篩選喵～</b>\n請選擇規則類型：", { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 管理模式 - 顯示特定規則的任務
@@ -703,7 +703,7 @@ async function handleCallbackQuery(ctx, env) {
     });
 
     if (!filtered.length) {
-      return ctx.editMessageText("📭 該規則無任務。", { reply_markup: new InlineKeyboard().text("⬅️ 返回", "manage_rule|") });
+      return ctx.editMessageText("😿 喵～該規則無任務。", { reply_markup: new InlineKeyboard().text("⬅️ 返回", "manage_rule|") });
     }
 
     const kb = new InlineKeyboard();
@@ -719,7 +719,7 @@ async function handleCallbackQuery(ctx, env) {
     }
     kb.text("⬅️ 返回", "manage_rule|").text("❌ 關閉", "cancel");
 
-    await ctx.editMessageText(`🔄 <b>${ruleKey}任務</b>\n請選擇操作：`, { parse_mode: "HTML", reply_markup: kb });
+    await ctx.editMessageText(`🔄 <b>${ruleKey}任務喵～</b>\n請選擇操作：`, { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 規則視圖下的勾選邏輯 (Toggle with Rule context)
@@ -759,7 +759,7 @@ async function handleCallbackQuery(ctx, env) {
       }
       kb.text("⬅️ 返回", "manage_rule|").text("❌ 關閉", "cancel");
 
-      await ctx.editMessageText(`🔄 <b>${ruleKey}任務</b>\n請勾選要刪除的任務：`, { parse_mode: "HTML", reply_markup: kb });
+      await ctx.editMessageText(`🔄 <b>${ruleKey}任務喵～</b>\n請勾選要刪除的任務：`, { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 刪除此時間點（針對週期性任務）
@@ -769,12 +769,12 @@ async function handleCallbackQuery(ctx, env) {
     const selectedIds = idsStr ? idsStr.split(",").filter(x => x) : [];
 
     if (!selectedIds.length) {
-      return ctx.answerCallbackQuery("請先勾選任務");
+      return ctx.answerCallbackQuery("喵～請先勾選任務");
     }
 
     // 只刪除選中的任務（單次刪除，不影響週期規則）
     await deleteTodosByIds(env, selectedIds, userId);
-    await ctx.editMessageText(`🗑️ 已刪除 ${selectedIds.length} 個任務（僅此時間點）。`, { parse_mode: "HTML" });
+    await ctx.editMessageText(`🗑️ 喵～已刪除 ${selectedIds.length} 個任務（僅此時間點）！`, { parse_mode: "HTML" });
   }
 
   // 刪除整個規則（針對週期性任務）
@@ -784,7 +784,7 @@ async function handleCallbackQuery(ctx, env) {
     const selectedIds = idsStr ? idsStr.split(",").filter(x => x) : [];
 
     if (!selectedIds.length) {
-      return ctx.answerCallbackQuery("請先勾選任務");
+      return ctx.answerCallbackQuery("喵～請先勾選任務");
     }
 
     const results = await getTodos(env, userId, 0);
@@ -796,13 +796,13 @@ async function handleCallbackQuery(ctx, env) {
     if (!rulesToDelete.length) {
       // 如果沒有週期規則，就只刪除選中的
       await deleteTodosByIds(env, selectedIds, userId);
-      await ctx.editMessageText(`🗑️ 已刪除 ${selectedIds.length} 個任務。`, { parse_mode: "HTML" });
+      await ctx.editMessageText(`🗑️ 喵～已刪除 ${selectedIds.length} 個任務！`, { parse_mode: "HTML" });
     } else {
       // 刪除所有符合這些規則的任務
       const tasksWithSameRule = results.filter(t => rulesToDelete.includes(t.cron_rule));
       const idsToDelete = tasksWithSameRule.map(t => t.id);
       await deleteTodosByIds(env, idsToDelete, userId);
-      await ctx.editMessageText(`🗑️ 已刪除 ${idsToDelete.length} 個任務（整個規則）。`, { parse_mode: "HTML" });
+      await ctx.editMessageText(`🗑️ 喵～已刪除 ${idsToDelete.length} 個任務（整個規則）！`, { parse_mode: "HTML" });
     }
   }
 
@@ -812,12 +812,12 @@ async function handleCallbackQuery(ctx, env) {
       const idsStr = parts[1];
       const ruleKey = parts[2];
 
-      if (!idsStr) return ctx.answerCallbackQuery("未選擇任何任務");
+      if (!idsStr) return ctx.answerCallbackQuery("喵～未選擇任何任務");
       const ids = idsStr.split(",").filter(x => x);
-      if (!ids.length) return ctx.answerCallbackQuery("未選擇任何任務");
+      if (!ids.length) return ctx.answerCallbackQuery("喵～未選擇任何任務");
 
       await deleteTodosByIds(env, ids, userId);
-      await ctx.editMessageText(`🗑️ 已刪除 ${ids.length} 個任務。`);
+      await ctx.editMessageText(`🗑️ 喵～已刪除 ${ids.length} 個任務！`);
   }
 
   // 勾選邏輯 (Toggle)
@@ -832,18 +832,18 @@ async function handleCallbackQuery(ctx, env) {
       results.forEach(t => kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${t.task}`, `tog|${t.id}|${newList}`).row());
       kb.text("❌ 關閉", "cancel").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del|${newList}`);
 
-      await ctx.editMessageText("請勾選要刪除的任務：", { reply_markup: kb });
+      await ctx.editMessageText("喵～請勾選要刪除的任務：", { reply_markup: kb });
   }
 
   // 確認刪除
   if (data.startsWith("conf_del|")) {
       const idsStr = data.split("|")[1];
-      if (!idsStr) return ctx.answerCallbackQuery("未選擇任何任務");
+      if (!idsStr) return ctx.answerCallbackQuery("喵～未選擇任何任務");
       const ids = idsStr.split(",").filter(x => x);
-      if (!ids.length) return ctx.answerCallbackQuery("未選擇任何任務");
+      if (!ids.length) return ctx.answerCallbackQuery("喵～未選擇任何任務");
 
       await deleteTodosByIds(env, ids, userId);
-      await ctx.editMessageText(`🗑️ 已刪除 ${ids.length} 個任務。`);
+      await ctx.editMessageText(`🗑️ 喵～已刪除 ${ids.length} 個任務！`);
   }
 }
 

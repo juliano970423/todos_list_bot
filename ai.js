@@ -490,6 +490,13 @@ function parseQueryLocally(queryText) {
     }
   }
 
+  // 先檢查輸入是否包含日期特徵，沒有的話直接返回 null
+  const hasDateFeature = /今天|明天|昨天|本週|下週|本月|\d{1,2}[\/\-月]|\d{1,2}[日號]|週|week|day|after|before/i.test(queryText);
+
+  if (!hasDateFeature) {
+    return null;
+  }
+
   // 使用 chrono 解析其他日期格式
   const chronoResults = chrono.parse(queryText, refDate, { forwardDate: true });
   if (chronoResults.length > 0) {

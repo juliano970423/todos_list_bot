@@ -41,7 +41,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
   if (label === "例行性任務清單") {
     const recurringTasks = results.filter(t => t.cron_rule && t.cron_rule !== 'none' && t.cron_rule !== null);
 
-    if (!recurringTasks.length) return ctx.reply(`📋 <b>${label}</b>\n📭 目前無例行性任務。`, { parse_mode: "HTML" });
+    if (!recurringTasks.length) return ctx.reply(`📋 <b>${label}</b>\n😿 喵～目前沒有例行性任務呢～`, { parse_mode: "HTML" });
 
     let msg = `📋 <b>${label}</b>\n`;
     recurringTasks.forEach((t, i) => {
@@ -62,7 +62,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
     return await ctx.reply(msg, {
       parse_mode: "HTML",
-      reply_markup: new InlineKeyboard().text("🗑️ 管理模式", "manage_mode")
+      reply_markup: new InlineKeyboard().text("🗑️ 管理喵", "manage_mode")
     });
   }
 
@@ -134,7 +134,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     }
     return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
   });
-  if (!filtered.length) return ctx.reply(`📭 ${label} 沒有待辦事項。`);
+  if (!filtered.length) return ctx.reply(`😿 喵～${label} 沒有待辦事項呢～`);
 
   // 排序：先發生的在前面，無期限(-1)放最後
   filtered.sort((a, b) => {
@@ -143,7 +143,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     return a.remind_at - b.remind_at;
   });
 
-  let msg = `📋 <b>${label} 任務清單：</b>\n`;
+  let msg = `📋 <b>${label} 任務清單喵～</b>\n`;
   filtered.forEach((t, i) => {
     let timeDisplay = "";
 
@@ -193,7 +193,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
   await ctx.reply(msg, {
     parse_mode: "HTML",
-    reply_markup: new InlineKeyboard().text("🗑️ 管理模式", "manage_mode")
+    reply_markup: new InlineKeyboard().text("🗑️ 管理喵", "manage_mode")
   });
 }
 
@@ -211,12 +211,12 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
   if (!results.length) {
     // 如果是清空操作後的查詢
     if (label === "最近" && startTs === null && endTs === null) {
-      return ctx.reply(`📚 ${label} 無完成紀錄。`, { parse_mode: "HTML" });
+      return ctx.reply(`📚 ${label} 無完成紀錄喵～`, { parse_mode: "HTML" });
     }
-    return ctx.reply(`📚 ${label} 無完成紀錄。`, { parse_mode: "HTML" });
+    return ctx.reply(`📚 ${label} 無完成紀錄喵～`, { parse_mode: "HTML" });
   }
 
-  let msg = `📚 <b>${label} 完成紀錄：</b>\n`;
+  let msg = `📚 <b>${label} 完成紀錄喵～</b>\n`;
   // 按提醒時間從近到遠排序（最近的在前）
   results.sort((a, b) => b.remind_at - a.remind_at);
   results = results.slice(0, 15); // 限制顯示 15 筆
@@ -237,7 +237,7 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
 async function sendConfirmation(ctx, state) {
   let timeStr;
   if (state.remindAt === -1) {
-    timeStr = "無時間限制";
+    timeStr = "無時間限制喵";
   } else if (state.allDay) {
     // 對於全天任務，只顯示日期，不顯示具體時間
     const date = new Date(state.remindAt * 1000);
@@ -254,12 +254,12 @@ async function sendConfirmation(ctx, state) {
   const rejudgeCallback = "rejudge";
 
   const kb = new InlineKeyboard()
-    .text("✅ 確認儲存", `sv|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`)
+    .text("✅ 確認儲存喵", `sv|${state.remindAt}|${state.cronRule || 'n'}|${state.allDay}`)
     .text("❌ 取消", "cancel")
     .row()
-    .text("🤖 AI 重新判斷", rejudgeCallback);
+    .text("🤖 AI 重新判斷喵", rejudgeCallback);
 
-  let msg = `📌 <b>任務確認</b>\n` +
+  let msg = `📌 <b>任務確認喵～</b>\n` +
             `📝 內容：${state.task}\n` +
             `⏰ 時間：${timeStr}\n` +
             `🔄 規則：${ruleText}\n` +
@@ -333,10 +333,10 @@ async function processScheduledReminders(bot, env) {
 // --- 7. 渲染例行性任務列表 ---
 async function renderRecurringTasks(ctx, env, tasks) {
   if (!tasks || tasks.length === 0) {
-    return await ctx.reply(`📋 <b>例行性任務清單：</b>\n📭 目前無例行性任務。`, { parse_mode: "HTML" });
+    return await ctx.reply(`📋 <b>例行性任務清單：</b>\n😿 喵～目前沒有例行性任務呢～`, { parse_mode: "HTML" });
   }
 
-  let msg = `📋 <b>例行性任務清單：</b>\n`;
+  let msg = `📋 <b>例行性任務清單喵～</b>\n`;
   tasks.forEach((t, i) => {
     let timeDisplay = "";
 
@@ -356,7 +356,7 @@ async function renderRecurringTasks(ctx, env, tasks) {
 
   return await ctx.reply(msg, {
     parse_mode: "HTML",
-    reply_markup: new InlineKeyboard().text("🗑️ 管理模式", "manage_mode")
+    reply_markup: new InlineKeyboard().text("🗑️ 管理喵", "manage_mode")
   });
 }
 
