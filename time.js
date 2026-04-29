@@ -175,6 +175,39 @@ function formatTimestampToTaipeiTime(timestamp) {
   return date.toLocaleString('zh-TW', {timeZone:'Asia/Taipei', hour12:false});
 }
 
+/**
+ * 獲取早上報告時間範圍（台北時間）
+ * 今天 9:00 - 今天 23:59:59
+ */
+function getMorningReportRangeTaipei() {
+  const now = getNowTaipei();
+  const start = new Date(now);
+  start.setHours(9, 0, 0, 0);
+  const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
+  return {
+    start: localDateToUtcTs(start),
+    end: localDateToUtcTs(end)
+  };
+}
+
+/**
+ * 獲取晚上報告時間範圍（台北時間）
+ * 今天 21:00 - 明天 23:59:59
+ */
+function getEveningReportRangeTaipei() {
+  const now = getNowTaipei();
+  const start = new Date(now);
+  start.setHours(21, 0, 0, 0);
+  const end = new Date(now);
+  end.setDate(end.getDate() + 1);
+  end.setHours(23, 59, 59, 999);
+  return {
+    start: localDateToUtcTs(start),
+    end: localDateToUtcTs(end)
+  };
+}
+
 export {
   TAIPEI_OFFSET,
   getNowTaipei,
@@ -188,5 +221,7 @@ export {
   calculateNext,
   getDayStartTimestamp,
   getDayEndTimestamp,
-  formatTimestampToTaipeiTime
+  formatTimestampToTaipeiTime,
+  getMorningReportRangeTaipei,
+  getEveningReportRangeTaipei
 };

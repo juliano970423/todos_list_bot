@@ -1,6 +1,6 @@
 // task.js - 任務處理模組
 import { InlineKeyboard } from "grammy";
-import { formatTimestampToTaipeiTime, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei } from "./time.js";
+import { formatTimestampToTaipeiTime, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei, getMorningReportRangeTaipei, getEveningReportRangeTaipei } from "./time.js";
 import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime } from "./db.js";
 import { calculateNext } from "./time.js";
 
@@ -319,11 +319,75 @@ async function processScheduledReminders(bot, env) {
     }
 
     // 2. 每日彙整 (早晚 9 點)
-    const h = nowTaipei.getUTCHours();
-    const m = nowTaipei.getUTCMinutes();
+    const h = nowTaipei.getHours();
+    const m = nowTaipei.getMinutes();
     if ((h === 9 || h === 21) && m < 5) {
-       // (簡化版：實際部署可加入彙整通知邏輯)
-       // console.log("執行每日彙整檢查...");
+      const isMorning = (h === 9);
+      const timeRange = isMorning ? getMorningReportRangeTaipei() : getEveningReportRangeTaipei();
+
+      // 获取所有有待办事项的用户
+      const { results: userRows } = await env.DB.prepare(
+        "SELECT DISTINCT user_id FROM todos WHERE status = 0"
+      ).all();
+
+      for (const row of userRows) {
+        const userId = row.user_id;
+
+        // 获取用户所有未完成的待办
+        const allTodos = await getTodos(env, userId, 0);
+
+        // 过滤出在报告时间范围内的任务（包括周期任务）
+        const filtered = allTodos.filter(t => {
+          if (t.cron_rule) {
+            // 周期任务：直接包含
+            return true;
+          }
+          // 单次任务：检查是否在时间范围内
+          return t.remind_at >= timeRange.start && t.remind_at <= timeRange.end;
+        });
+
+        if (filtered.length > 0) {
+          let msg = `📋 <b>${isMorning ? '今日待辦 (9:00-24:00)' : '今晚及明日待辦 (21:00-24:00)'}</b>\n\n`;
+
+          // 排序：先发生的在前面
+          filtered.sort((a, b) => {
+            if (a.remind_at === -1) return 1;
+            if (b.remind_at === -1) return -1;
+            return a.remind_at - b.remind_at;
+          });
+
+          filtered.forEach((t, i) => {
+            let timeStr = '';
+            if (t.cron_rule) {
+              timeStr = `🔄 ${translateRule(t.cron_rule)}`;
+            } else if (t.all_day) {
+              timeStr = '☀️ ' + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {
+                timeZone: 'Asia/Taipei',
+                month: 'numeric',
+                day: 'numeric'
+              }) + ' (全天)';
+            } else if (t.remind_at !== -1) {
+              timeStr = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {
+                timeZone: 'Asia/Taipei',
+                month: 'numeric',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+              });
+            } else {
+              timeStr = '無期限';
+            }
+            msg += `${i + 1}. [${timeStr}] ${t.task}\n`;
+          });
+
+          try {
+            await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
+          } catch (e) {
+            console.error(`发送报告给 ${userId} 失败:`, e);
+          }
+        }
+      }
     }
   } catch (e) {
     console.error("Cron Error:", e);
