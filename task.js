@@ -319,22 +319,28 @@ async function processScheduledReminders(bot, env) {
     }
 
     // 2. 每日彙整 (早晚 9 點)
-    const h = nowTaipei.getHours();
-    const m = nowTaipei.getMinutes();
+    const h = nowTaipei.getUTCHours();
+    const m = nowTaipei.getUTCMinutes();
+    console.log(`[每日报告] 当前台北时间: ${h}:${m}, nowTaipei: ${nowTaipei.toISOString()}`);
     if ((h === 9 || h === 21) && m < 5) {
+      console.log(`[每日报告] 触发报告发送，isMorning: ${h === 9}`);
       const isMorning = (h === 9);
       const timeRange = isMorning ? getMorningReportRangeTaipei() : getEveningReportRangeTaipei();
+      console.log(`[每日报告] 时间范围: ${timeRange.start} - ${timeRange.end}`);
 
       // 获取所有有待办事项的用户
       const { results: userRows } = await env.DB.prepare(
         "SELECT DISTINCT user_id FROM todos WHERE status = 0"
       ).all();
+      console.log(`[每日报告] 找到 ${userRows.length} 个有待办的用户`);
 
       for (const row of userRows) {
         const userId = row.user_id;
+        console.log(`[每日报告] 处理用户 ${userId}`);
 
         // 获取用户所有未完成的待办
         const allTodos = await getTodos(env, userId, 0);
+        console.log(`[每日报告] 用户 ${userId} 有 ${allTodos.length} 个未完成的待办`);
 
         // 过滤出在报告时间范围内的任务（包括周期任务）
         const filtered = allTodos.filter(t => {
@@ -345,6 +351,7 @@ async function processScheduledReminders(bot, env) {
           // 单次任务：检查是否在时间范围内
           return t.remind_at >= timeRange.start && t.remind_at <= timeRange.end;
         });
+        console.log(`[每日报告] 用户 ${userId} 过滤后有 ${filtered.length} 个待办在报告范围内`);
 
         if (filtered.length > 0) {
           let msg = `📋 <b>${isMorning ? '今日待辦 (9:00-24:00)' : '今晚及明日待辦 (21:00-24:00)'}</b>\n\n`;
@@ -382,12 +389,16 @@ async function processScheduledReminders(bot, env) {
           });
 
           try {
+            console.log(`[每日报告] 准备发送消息给用户 ${userId}`);
             await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
+            console.log(`[每日报告] 成功发送报告给用户 ${userId}`);
           } catch (e) {
-            console.error(`发送报告给 ${userId} 失败:`, e);
+            console.error(`[每日报告] 发送报告给 ${userId} 失败:`, e);
           }
         }
       }
+    } else {
+      console.log(`[每日报告] 未到报告时间，当前: ${h}:${m}`);
     }
   } catch (e) {
     console.error("Cron Error:", e);
