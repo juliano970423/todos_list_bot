@@ -72,8 +72,46 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
   const filtered = results.filter(t => {
     if (t.cron_rule) {
-      // 週期任務：直接檢查下次執行時間是否在查詢範圍內
-      return t.remind_at >= start && t.remind_at <= end;
+      // 週期任務：檢查查詢時間範圍內是否有符合規則的執行時間
+      if (t.cron_rule.startsWith('weekly:')) {
+        const days = t.cron_rule.split(':')[1].split(',').map(Number);
+        const startDate = new Date(start * 1000);
+        const endDate = new Date(end * 1000);
+        let currentDate = new Date(startDate);
+        while (currentDate <= endDate) {
+          const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay();
+          if (days.includes(dayOfWeekISO)) return true;
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+        return false;
+      }
+      if (t.cron_rule === 'daily') {
+        // 每天執行，只要時間範圍大於等於1天就顯示
+        return true;
+      }
+      if (t.cron_rule.startsWith('monthly:')) {
+        const dayOfMonth = parseInt(t.cron_rule.split(':')[1]);
+        const startDate = new Date(start * 1000);
+        const endDate = new Date(end * 1000);
+        let currentDate = new Date(startDate);
+        while (currentDate <= endDate) {
+          if (currentDate.getDate() === dayOfMonth) return true;
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+        return false;
+      }
+      if (t.cron_rule.startsWith('yearly:')) {
+        const [month, day] = t.cron_rule.split(':')[1].split('-').map(Number);
+        const startDate = new Date(start * 1000);
+        const endDate = new Date(end * 1000);
+        let currentDate = new Date(startDate);
+        while (currentDate <= endDate) {
+          if (currentDate.getMonth() + 1 === month && currentDate.getDate() === day) return true;
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+        return false;
+      }
+      return false;
     }
     return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
   });
