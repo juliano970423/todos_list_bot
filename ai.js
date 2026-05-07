@@ -108,7 +108,7 @@ async function callAI(env, prompt) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: "nova-fast", // 或 "gpt-4o-mini"
+        model: "openai-fast", // 或 "gpt-4o-mini"
         messages: [{ role: "user", content: prompt }],
         jsonMode: true
       }),

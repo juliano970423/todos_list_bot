@@ -322,7 +322,7 @@ async function processScheduledReminders(bot, env) {
     const h = nowTaipei.getUTCHours();
     const m = nowTaipei.getUTCMinutes();
     console.log(`[每日报告] 当前台北时间: ${h}:${m}, nowTaipei: ${nowTaipei.toISOString()}`);
-    if ((h === 9 || h === 21) && m < 5) {
+    if ((h === 9 || h === 21) && m < 1) {
       console.log(`[每日报告] 触发报告发送，isMorning: ${h === 9}`);
       const isMorning = (h === 9);
       const timeRange = isMorning ? getMorningReportRangeTaipei() : getEveningReportRangeTaipei();
@@ -345,8 +345,8 @@ async function processScheduledReminders(bot, env) {
         // 过滤出在报告时间范围内的任务（包括周期任务）
         const filtered = allTodos.filter(t => {
           if (t.cron_rule) {
-            // 周期任务：直接包含
-            return true;
+            // 周期任务：检查下次执行时间是否在报告时间范围内
+            return t.remind_at >= timeRange.start && t.remind_at <= timeRange.end;
           }
           // 单次任务：检查是否在时间范围内
           return t.remind_at >= timeRange.start && t.remind_at <= timeRange.end;
