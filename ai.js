@@ -458,40 +458,43 @@ function parseQueryLocally(queryText) {
     return { start, end, label: '上個月' };
   }
 
-  // 處理 "N天後" / "in N days" / 中文數字
-  const chineseNumMap = { '一': 1, '二': 2, '兩': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
-  const inDaysMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+)\s*(?:days|天後)/i);
+  // 數字映射（阿拉伯、中文、英文）
+  const numMap = {
+    '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10,
+    '一': 1, '二': 2, '兩': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+  };
+
+  // 處理 "N天後" / "in N days" / 各種數字格式
+  const inDaysMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:days|天後)/i);
   if (inDaysMatch) {
-    let days = parseInt(inDaysMatch[1]);
-    if (isNaN(days)) {
-      days = chineseNumMap[inDaysMatch[1]] || 1;
-    }
+    let days = numMap[inDaysMatch[1].toLowerCase()] || parseInt(inDaysMatch[1]);
+    if (isNaN(days)) days = 1;
     const targetDate = new Date(today);
     targetDate.setDate(today.getDate() + days);
     const { start, end } = getDayRangeTaipei(targetDate);
     return { start, end, label: `${days}天後` };
   }
 
-  // 處理 "N週後" / "in N weeks"
-  const inWeeksMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+)\s*(?:weeks?|週後|周後)/i);
+  // 處理 "N週後" / "in N weeks" / "N weeks later" / 各種數字格式
+  const inWeeksMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:weeks?|週後|周後|weeks?\s*later)/i);
   if (inWeeksMatch) {
-    let weeks = parseInt(inWeeksMatch[1]);
-    if (isNaN(weeks)) {
-      weeks = chineseNumMap[inWeeksMatch[1]] || 1;
-    }
+    let weeks = numMap[inWeeksMatch[1].toLowerCase()] || parseInt(inWeeksMatch[1]);
+    if (isNaN(weeks)) weeks = 1;
+    console.log(`[parseQueryLocally] 解析到 N週後: ${weeks} 週, 原始文本: ${text}`);
     const targetDate = new Date(today);
     targetDate.setDate(today.getDate() + weeks * 7);
+    console.log(`[parseQueryLocally] 目標日期: ${targetDate.toISOString()}`);
     const { start, end } = getDayRangeTaipei(targetDate);
+    console.log(`[parseQueryLocally] 時間範圍: ${start} - ${end}`);
     return { start, end, label: `${weeks}週後` };
   }
 
-  // 處理 "N個月後" / "in N months"
-  const inMonthsMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+)\s*(?:months?|個月後)/i);
+  // 處理 "N個月後" / "in N months" / 各種數字格式
+  const inMonthsMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:months?|個月後)/i);
   if (inMonthsMatch) {
-    let months = parseInt(inMonthsMatch[1]);
-    if (isNaN(months)) {
-      months = chineseNumMap[inMonthsMatch[1]] || 1;
-    }
+    let months = numMap[inMonthsMatch[1].toLowerCase()] || parseInt(inMonthsMatch[1]);
+    if (isNaN(months)) months = 1;
     const targetDate = new Date(today);
     targetDate.setMonth(targetDate.getMonth() + months);
     const { start, end } = getDayRangeTaipei(targetDate);

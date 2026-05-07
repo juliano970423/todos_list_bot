@@ -77,12 +77,19 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         const days = t.cron_rule.split(':')[1].split(',').map(Number);
         const startDate = new Date(start * 1000);
         const endDate = new Date(end * 1000);
+        console.log(`[renderList] 檢查週期任務: ${t.task}, 規則: ${t.cron_rule}, remind_at: ${t.remind_at}`);
+        console.log(`[renderList] 查詢範圍: ${startDate.toISOString()} - ${endDate.toISOString()}`);
         let currentDate = new Date(startDate);
         while (currentDate <= endDate) {
           const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay();
-          if (days.includes(dayOfWeekISO)) return true;
+          console.log(`[renderList] 檢查日期: ${currentDate.toISOString()}, 星期: ${dayOfWeekISO}, 符合: ${days.includes(dayOfWeekISO)}`);
+          if (days.includes(dayOfWeekISO)) {
+            console.log(`[renderList] ✓ 顯示任務: ${t.task}`);
+            return true;
+          }
           currentDate.setDate(currentDate.getDate() + 1);
         }
+        console.log(`[renderList] ✗ 不顯示任務: ${t.task}`);
         return false;
       }
       if (t.cron_rule === 'daily') {
