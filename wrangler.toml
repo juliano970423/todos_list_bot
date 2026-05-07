@@ -12,3 +12,7 @@ database_id = "fb7570f1-e394-49d1-89d2-1d90bf938c4c"
 [triggers]
 # 修改這裡：從 * * * * * 改成 */2 * * * *
 crons = ["*/2 * * * *"]
+
+# 啟用日誌功能，讓 console.log 可以出現在 Cloudflare Dashboard
+[observability]
+enabled = true
