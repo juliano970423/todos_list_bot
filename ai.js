@@ -477,7 +477,7 @@ function parseQueryLocally(queryText) {
   }
 
   // 處理 "N週後" / "in N weeks" / "N weeks later" / 各種數字格式
-  const inWeeksMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:weeks?|週後|周後|weeks?\s*later)/i);
+  const inWeeksMatch = text.match(/(?:in\s*)?(\d+|[一二兩三四五六七八九十]+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:weeks?\s+later|weeks?|週後|周後)/i);
   if (inWeeksMatch) {
     let weeks = numMap[inWeeksMatch[1].toLowerCase()] || parseInt(inWeeksMatch[1]);
     if (isNaN(weeks)) weeks = 1;

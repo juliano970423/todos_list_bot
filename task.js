@@ -75,25 +75,45 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
       // 週期任務：檢查查詢時間範圍內是否有符合規則的執行時間
       if (t.cron_rule.startsWith('weekly:')) {
         const days = t.cron_rule.split(':')[1].split(',').map(Number);
-        const startDate = new Date(start * 1000);
-        const endDate = new Date(end * 1000);
-        console.log(`[renderList] 檢查週期任務: ${t.task}, 規則: ${t.cron_rule}, remind_at: ${t.remind_at}`);
-        console.log(`[renderList] 查詢範圍: ${startDate.toISOString()} - ${endDate.toISOString()}`);
+        
+        // start 和 end 是「台北時間對應的 UTC 時間戳（秒）」
+        // 要得到台北時間的星期幾：
+        // 1. start * 1000 + 8h 得到台北時間的毫秒數
+        // 2. new Date() 創建的對象內部值是 UTC 時間（台北時間+8h）
+        // 3. getUTCDay() 返回內部 UTC 值的星期幾，也就是台北時間的星期幾
+        const taipeiOffsetMs = 8 * 60 * 60 * 1000;
+        const startDate = new Date(start * 1000 + taipeiOffsetMs);
+        const endDate = new Date(end * 1000 + taipeiOffsetMs);
+        
+        console.log(`[renderList] ===== 開始檢查週期任務 =====`);
+        console.log(`[renderList] 任務: ${t.task}`);
+        console.log(`[renderList] cron_rule: ${t.cron_rule}`);
+        console.log(`[renderList] 解析出的星期幾: ${days}`);
+        console.log(`[renderList] 查詢範圍(UTC): ${start} - ${end}`);
+        console.log(`[renderList] 查詢範圍(台北): ${startDate.toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} - ${endDate.toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})}`);
+        
         let currentDate = new Date(startDate);
+        
         while (currentDate <= endDate) {
-          const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay();
-          console.log(`[renderList] 檢查日期: ${currentDate.toISOString()}, 星期: ${dayOfWeekISO}, 符合: ${days.includes(dayOfWeekISO)}`);
-          if (days.includes(dayOfWeekISO)) {
-            console.log(`[renderList] ✓ 顯示任務: ${t.task}`);
+          // currentDate 內部值是 UTC 時間（台北時間+8h）
+          // getUTCDay() 返回的是台北時間的星期幾
+          const utcDay = currentDate.getUTCDay();
+          const dayOfWeekISO = utcDay === 0 ? 7 : utcDay;
+          
+          const isMatch = days.includes(dayOfWeekISO);
+          console.log(`[renderList] 檢查 ${currentDate.toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})}: 台北星期=${dayOfWeekISO}, 符合=${isMatch}`);
+          if (isMatch) {
+            console.log(`[renderList] ✓ 找到符合日期`);
+            console.log(`[renderList] ===== 結束檢查 =====`);
             return true;
           }
-          currentDate.setDate(currentDate.getDate() + 1);
+          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
         }
-        console.log(`[renderList] ✗ 不顯示任務: ${t.task}`);
+        console.log(`[renderList] ✗ 未找到符合日期`);
+        console.log(`[renderList] ===== 結束檢查 =====`);
         return false;
       }
       if (t.cron_rule === 'daily') {
-        // 每天執行，只要時間範圍大於等於1天就顯示
         return true;
       }
       if (t.cron_rule.startsWith('monthly:')) {
@@ -102,8 +122,8 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         const endDate = new Date(end * 1000);
         let currentDate = new Date(startDate);
         while (currentDate <= endDate) {
-          if (currentDate.getDate() === dayOfMonth) return true;
-          currentDate.setDate(currentDate.getDate() + 1);
+          if (currentDate.getUTCDate() === dayOfMonth) return true;
+          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
         }
         return false;
       }
@@ -113,8 +133,8 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         const endDate = new Date(end * 1000);
         let currentDate = new Date(startDate);
         while (currentDate <= endDate) {
-          if (currentDate.getMonth() + 1 === month && currentDate.getDate() === day) return true;
-          currentDate.setDate(currentDate.getDate() + 1);
+          if (currentDate.getUTCMonth() + 1 === month && currentDate.getUTCDate() === day) return true;
+          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
         }
         return false;
       }
