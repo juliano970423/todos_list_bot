@@ -92,8 +92,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         let currentDate = new Date(startDate);
         
         while (currentDate <= endDate) {
-          // currentDate 內部值是 UTC 時間（台北時間+8h）
-          // getUTCDay() 返回的是台北時間的星期幾
+          // currentDate 等於台北時間，getUTCDay() 返回台北的星期幾
           const utcDay = currentDate.getUTCDay();
           const dayOfWeekISO = utcDay === 0 ? 7 : utcDay;
           
