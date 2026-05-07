@@ -72,65 +72,8 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
   const filtered = results.filter(t => {
     if (t.cron_rule) {
-      // 對於週期性任務，需要檢查在指定時間範圍內是否有符合規則的日期
-      if (t.cron_rule.startsWith('weekly:')) {
-        const days = t.cron_rule.split(':')[1].split(',').map(Number);
-  
-        // 檢查時間範圍內是否有符合週期規則的日期
-        const startDate = new Date(start * 1000);
-        const endDate = new Date(end * 1000);
-  
-        console.log(`[DEBUG] 查詢週期性任務: ${t.task}, 規則: ${t.cron_rule}, 星期幾: ${days}`);
-        console.log(`[DEBUG] 時間範圍: ${start} (${startDate.toISOString()}) 到 ${end} (${endDate.toISOString()})`);
-  
-        // 遍歷時間範圍內的每一天
-        let currentDate = new Date(startDate);
-        while (currentDate <= endDate) {
-          const dayOfWeekISO = currentDate.getDay() === 0 ? 7 : currentDate.getDay(); // Convert to ISO
-          console.log(`[DEBUG] 檢查日期: ${currentDate.toISOString()}, 星期幾: ${dayOfWeekISO}, 符合: ${days.includes(dayOfWeekISO)}`);
-          if (days.includes(dayOfWeekISO)) {
-            console.log(`[DEBUG] ✓ 顯示任務: ${t.task}`);
-            return true;
-          }
-          currentDate.setDate(currentDate.getDate() + 1);
-        }
-        console.log(`[DEBUG] ✗ 不顯示任務: ${t.task}`);
-        return false;
-      }      // daily 任務：每天都顯示
-      if (t.cron_rule === 'daily') {
-        return true;
-      }
-      // monthly 任務：檢查時間範圍內是否有符合月份規則的日期
-      if (t.cron_rule.startsWith('monthly:')) {
-        const dayOfMonth = parseInt(t.cron_rule.split(':')[1]);
-        const startDate = new Date(start * 1000);
-        const endDate = new Date(end * 1000);
-        let currentDate = new Date(startDate);
-        while (currentDate <= endDate) {
-          if (currentDate.getDate() === dayOfMonth) {
-            return true;
-          }
-          currentDate.setDate(currentDate.getDate() + 1);
-        }
-        return false;
-      }
-      // yearly 任務：檢查時間範圍內是否有符合年份規則的日期
-      if (t.cron_rule.startsWith('yearly:')) {
-        const monthDay = t.cron_rule.split(':')[1]; // 格式為 MM-DD
-        const [month, day] = monthDay.split('-').map(Number);
-        const startDate = new Date(start * 1000);
-        const endDate = new Date(end * 1000);
-        let currentDate = new Date(startDate);
-        while (currentDate <= endDate) {
-          if (currentDate.getMonth() + 1 === month && currentDate.getDate() === day) {
-            return true;
-          }
-          currentDate.setDate(currentDate.getDate() + 1);
-        }
-        return false;
-      }
-      // 其他未定義的週期性任務不顯示
-      return false;
+      // 週期任務：直接檢查下次執行時間是否在查詢範圍內
+      return t.remind_at >= start && t.remind_at <= end;
     }
     return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
   });
