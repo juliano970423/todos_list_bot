@@ -77,11 +77,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         const days = t.cron_rule.split(':')[1].split(',').map(Number);
         
         // start 和 end 是「台北時間對應的 UTC 時間戳（秒）」
-        // 例如：台北 5/21 00:00 → UTC 5/20 16:00 → start = UTC 秒數
-        // 要得到台北時間的星期幾：
-        // 1. start * 1000 + 8h = 台北時間的毫秒數
-        // 2. new Date(台北時間毫秒數) → 內部值是 UTC (台北+8h)
-        // 3. getUTCDay() 返回內部 UTC 值的星期幾 = 台北時間的星期幾
+        // 加回 8 小時偏移量，得到台北時間的 Date 物件
         const taipeiOffsetMs = 8 * 60 * 60 * 1000;
         const startDate = new Date(start * 1000 + taipeiOffsetMs);
         const endDate = new Date(end * 1000 + taipeiOffsetMs);
