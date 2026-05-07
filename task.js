@@ -70,14 +70,15 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
   const start = startTs ?? todayRange.start;
   const end = endTs ?? todayRange.end;
 
-  const filtered = results.filter(t => {
+   const filtered = results.filter(t => {
     if (t.cron_rule) {
       // 週期任務：檢查查詢時間範圍內是否有符合規則的執行時間
       if (t.cron_rule.startsWith('weekly:')) {
         const days = t.cron_rule.split(':')[1].split(',').map(Number);
         
-        // start 和 end 是「台北時間對應的 UTC 時間戳（秒）」
-        // 加回 8 小時偏移量，得到台北時間的 Date 物件
+        // start/end 是台北时间的 UTC 时间戳（秒）
+        // 加回 8h 得到台北时间对应的 Date 对象（内部值 = UTC = 台北+8h）
+        // getUTCDay() 返回台北时间的星期几
         const taipeiOffsetMs = 8 * 60 * 60 * 1000;
         const startDate = new Date(start * 1000 + taipeiOffsetMs);
         const endDate = new Date(end * 1000 + taipeiOffsetMs);
@@ -92,7 +93,6 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         let currentDate = new Date(startDate);
         
         while (currentDate <= endDate) {
-          // currentDate 等於台北時間，getUTCDay() 返回台北的星期幾
           const utcDay = currentDate.getUTCDay();
           const dayOfWeekISO = utcDay === 0 ? 7 : utcDay;
           
