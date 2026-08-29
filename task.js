@@ -3,6 +3,7 @@ import { InlineKeyboard } from "grammy";
 import { formatTimestampToTaipeiTime, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei, getMorningReportRangeTaipei, getEveningReportRangeTaipei } from "./time.js";
 import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime } from "./db.js";
 import { calculateNext } from "./time.js";
+import { generateScheduleImage } from "./image.js";
 
 // 翻譯規則顯示文字
 function translateRule(rule) {
@@ -195,10 +196,40 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     msg += '</code>';
   }
 
-  await ctx.reply(msg, {
-    parse_mode: "HTML",
-    reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
-  });
+  // 產生圖片並發送
+  const dateRange = [];
+  if (filtered.length > 0) {
+    if (filtered[0].remind_at > 0) dateRange.push(formatDateStr(filtered[0].remind_at));
+    if (filtered.length > 1) {
+      const last = filtered[filtered.length - 1];
+      if (last.remind_at > 0) dateRange.push(formatDateStr(last.remind_at));
+    }
+  }
+
+  try {
+    const imgBuffer = generateScheduleImage(filtered, {
+      title: label,
+      dateStr: dateRange.length ? `${dateRange[0]}${dateRange.length > 1 ? ' ~ ' + dateRange[1] : ''}` : '',
+      type: 'list',
+    });
+    await ctx.replyWithPhoto(imgBuffer, {
+      caption: msg,
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
+    });
+  } catch (e) {
+    console.error("[renderList] 圖片產生失敗，fallback 為純文字:", e);
+    await ctx.reply(msg, {
+      parse_mode: "HTML",
+      reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
+    });
+  }
+}
+
+// 輔助：格式化時間戳為 M/D
+function formatDateStr(ts) {
+  if (!ts || ts === -1) return '';
+  return new Date(ts * 1000).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric' });
 }
 
 // --- 5. 渲染歷史 (History) ---
@@ -234,7 +265,31 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
     }
     msg += `${i+1}. [${timeStr}] ✅ ${t.task}\n`;
   });
-  await ctx.reply(msg, { parse_mode: "HTML" });
+
+  // 產生圖片並發送
+  const dateRange = [];
+  if (results.length > 0) {
+    if (results[0].remind_at > 0) dateRange.push(formatDateStr(results[0].remind_at));
+    if (results.length > 1) {
+      const last = results[results.length - 1];
+      if (last.remind_at > 0) dateRange.push(formatDateStr(last.remind_at));
+    }
+  }
+
+  try {
+    const imgBuffer = generateScheduleImage(results, {
+      title: label,
+      dateStr: dateRange.length ? `${dateRange[0]}${dateRange.length > 1 ? ' ~ ' + dateRange[1] : ''}` : '',
+      type: 'history',
+    });
+    await ctx.replyWithPhoto(imgBuffer, {
+      caption: msg,
+      parse_mode: "HTML",
+    });
+  } catch (e) {
+    console.error("[renderHistory] 圖片產生失敗，fallback 為純文字:", e);
+    await ctx.reply(msg, { parse_mode: "HTML" });
+  }
 }
 
 // --- 6. 確認與儲存 (UI) ---
@@ -394,7 +449,32 @@ async function processScheduledReminders(bot, env) {
 
           try {
             console.log(`[每日报告] 准备发送消息给用户 ${userId}`);
-            await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
+
+            // 產生圖片並發送
+            try {
+              const reportType = isMorning ? 'morning' : 'evening';
+              const reportTitle = isMorning ? '今日待辦' : '今晚及明日待辦';
+              const nowTaipeiDate = getNowTaipei();
+              const dateStr = nowTaipeiDate.toLocaleString('zh-TW', {
+                timeZone: 'Asia/Taipei',
+                month: 'numeric',
+                day: 'numeric',
+                weekday: 'short',
+              });
+              const imgBuffer = generateScheduleImage(filtered, {
+                title: reportTitle,
+                dateStr: dateStr,
+                type: reportType,
+              });
+              await bot.api.sendPhoto(userId, imgBuffer, {
+                caption: msg,
+                parse_mode: "HTML",
+              });
+            } catch (imgErr) {
+              console.error(`[每日报告] 圖片產生失敗，fallback 為純文字:`, imgErr);
+              await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
+            }
+
             console.log(`[每日报告] 成功发送报告给用户 ${userId}`);
           } catch (e) {
             console.error(`[每日报告] 发送报告给 ${userId} 失败:`, e);
