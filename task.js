@@ -1,5 +1,5 @@
 // task.js - 任務處理模組
-import { InlineKeyboard } from "grammy";
+import { InlineKeyboard, InputFile } from "grammy";
 import { formatTimestampToTaipeiTime, formatDateSmart, formatDateTimeSmart, formatShortDateSmart, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei, getMorningReportRangeTaipei, getEveningReportRangeTaipei } from "./time.js";
 import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime } from "./db.js";
 import { calculateNext } from "./time.js";
@@ -31,6 +31,20 @@ function translateRule(rule) {
     if (rule.includes('every')) return "每";
     if (rule.includes('each')) return "每";
     return rule;
+}
+
+// --- 圖片發送輔助 ---
+// 注意：Telegram sendPhoto 只接受 JPEG/PNG，會拒收 SVG；
+// SVG 改以文件 (document) 發送，客戶端可預覽，caption 與按鈕照常用。
+function toSvgDocument(svgBuffer, name = "schedule.svg") {
+  return new InputFile(svgBuffer, name);
+}
+
+// Workers 的 console 對 Error 物件序列化不完整，一律打出 message + stack + Telegram 描述
+function logSendError(tag, stage, e) {
+  const detail = e?.response?.description || e?.description || "";
+  console.error(`[${tag}] ${stage}失敗: ${e?.name || "Error"}: ${e?.message || e}${detail ? ` | TG: ${detail}` : ""}`);
+  if (e?.stack) console.error(`[${tag}] stack: ${String(e.stack).slice(0, 800)}`);
 }
 
 // --- 4. 渲染清單 (List) ---
@@ -206,24 +220,35 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     }
   }
 
+  let imgBuffer = null;
   try {
-    const imgBuffer = generateScheduleImage(filtered, {
+    imgBuffer = generateScheduleImage(filtered, {
       title: label,
       dateStr: dateRange.length ? `${dateRange[0]}${dateRange.length > 1 ? ' ~ ' + dateRange[1] : ''}` : '',
       type: 'list',
     });
-    await ctx.replyWithPhoto(imgBuffer, {
-      caption: msg,
-      parse_mode: "HTML",
-      reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
-    });
+    console.log(`[renderList] SVG 產生成功, ${imgBuffer.length} bytes`);
   } catch (e) {
-    console.error("[renderList] 圖片產生失敗，fallback 為純文字:", e);
-    await ctx.reply(msg, {
-      parse_mode: "HTML",
-      reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
-    });
+    logSendError("renderList", "SVG 產生", e);
   }
+
+  if (imgBuffer) {
+    try {
+      await ctx.replyWithDocument(toSvgDocument(imgBuffer), {
+        caption: msg,
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
+      });
+      console.log(`[renderList] SVG 文件發送成功`);
+      return;
+    } catch (e) {
+      logSendError("renderList", "SVG 文件發送", e);
+    }
+  }
+  await ctx.reply(msg, {
+    parse_mode: "HTML",
+    reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
+  });
 }
 
 // 輔助：格式化時間戳為 YYYY/M/D（帶年）
@@ -274,20 +299,31 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
     }
   }
 
+  let imgBuffer = null;
   try {
-    const imgBuffer = generateScheduleImage(results, {
+    imgBuffer = generateScheduleImage(results, {
       title: label,
       dateStr: dateRange.length ? `${dateRange[0]}${dateRange.length > 1 ? ' ~ ' + dateRange[1] : ''}` : '',
       type: 'history',
     });
-    await ctx.replyWithPhoto(imgBuffer, {
-      caption: msg,
-      parse_mode: "HTML",
-    });
+    console.log(`[renderHistory] SVG 產生成功, ${imgBuffer.length} bytes`);
   } catch (e) {
-    console.error("[renderHistory] 圖片產生失敗，fallback 為純文字:", e);
-    await ctx.reply(msg, { parse_mode: "HTML" });
+    logSendError("renderHistory", "SVG 產生", e);
   }
+
+  if (imgBuffer) {
+    try {
+      await ctx.replyWithDocument(toSvgDocument(imgBuffer, "history.svg"), {
+        caption: msg,
+        parse_mode: "HTML",
+      });
+      console.log(`[renderHistory] SVG 文件發送成功`);
+      return;
+    } catch (e) {
+      logSendError("renderHistory", "SVG 文件發送", e);
+    }
+  }
+  await ctx.reply(msg, { parse_mode: "HTML" });
 }
 
 // --- 批次 payload 編解碼 (stateless: 數據藏在訊息文本，callback 只帶短 key) ---
@@ -535,7 +571,7 @@ async function processScheduledReminders(bot, env) {
           try {
             console.log(`[每日报告] 准备发送消息给用户 ${userId}`);
 
-            // 產生圖片並發送
+            // 產生圖片並發送（SVG 以文件形式發送，sendPhoto 會拒收 SVG）
             try {
               const reportType = isMorning ? 'morning' : 'evening';
               const reportTitle = isMorning ? '今日待辦' : '今晚及明日待辦';
@@ -546,23 +582,39 @@ async function processScheduledReminders(bot, env) {
                 day: 'numeric',
                 weekday: 'short',
               });
-              const imgBuffer = generateScheduleImage(filtered, {
-                title: reportTitle,
-                dateStr: dateStr,
-                type: reportType,
-              });
-              await bot.api.sendPhoto(userId, imgBuffer, {
-                caption: msg,
-                parse_mode: "HTML",
-              });
+              let imgBuffer = null;
+              try {
+                imgBuffer = generateScheduleImage(filtered, {
+                  title: reportTitle,
+                  dateStr: dateStr,
+                  type: reportType,
+                });
+                console.log(`[每日报告] SVG 產生成功, ${imgBuffer.length} bytes, user=${userId}`);
+              } catch (genErr) {
+                logSendError("每日报告", "SVG 產生", genErr);
+              }
+              if (imgBuffer) {
+                try {
+                  await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {
+                    caption: msg,
+                    parse_mode: "HTML",
+                  });
+                  console.log(`[每日报告] SVG 文件發送成功, user=${userId}`);
+                } catch (sendErr) {
+                  logSendError("每日报告", "SVG 文件發送", sendErr);
+                  await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
+                }
+              } else {
+                await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
+              }
             } catch (imgErr) {
-              console.error(`[每日报告] 圖片產生失敗，fallback 為純文字:`, imgErr);
+              logSendError("每日报告", "圖片流程", imgErr);
               await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
             }
 
             console.log(`[每日报告] 成功发送报告给用户 ${userId}`);
           } catch (e) {
-            console.error(`[每日报告] 发送报告给 ${userId} 失败:`, e);
+            logSendError("每日报告", `发送报告给 ${userId}`, e);
           }
         }
       }
@@ -570,7 +622,7 @@ async function processScheduledReminders(bot, env) {
       console.log(`[每日报告] 未到报告时间，当前: ${h}:${m}`);
     }
   } catch (e) {
-    console.error("Cron Error:", e);
+    logSendError("Cron", "定時任務", e);
   }
 }
 

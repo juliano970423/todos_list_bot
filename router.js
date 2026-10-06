@@ -391,13 +391,15 @@ function validateBatchItems(rawTasks, refDate, existingTodos = []) {
       if (!date) {
         errors.push(`時間「${timeStr}」無法解析`);
       } else {
-        // isAllDay 一致性：含 HH:MM 必為非全天
+        // isAllDay 一致性：含 HH:MM 必為非全天；無 HH:MM 必為全天
+        // （chrono 對純日期預設補 12:00，沒有時刻就不可顯示具體時間；
+        //  週期任務也一樣，沒說幾點就是全天）
         const hasHM = /(\d{1,2}):(\d{2})/.test(timeStr);
         if (hasHM && allDay) {
           allDay = 0;
           warnings.push("含具體時刻，已自動改為非全天");
         }
-        if (!hasHM && !allDay && !rule) {
+        if (!hasHM && !allDay) {
           allDay = 1;
           warnings.push("無具體時刻，已自動改為全天");
         }

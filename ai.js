@@ -86,7 +86,7 @@ The input may contain ONE task or MULTIPLE tasks. You MUST split correctly.
    - ONLY use "yearly:MM-DD" if user EXPLICITLY says "Every year on X", "每年X", "每年的X". Example: "yearly:01-01". MM 01-12, DD must be valid for that month.
    - "Tonight at 9pm" -> rule: null.
    - If multiple tasks share one recurrence keyword (e.g. "每天要吃藥、運動"), apply the SAME rule to all.
-4. **isAllDay**: true if no specific hour:minute is mentioned (e.g., "Buy milk tomorrow"), OR for events like "Jan 1st" that are typically all-day. For recurring daily/weekly events, set to false unless explicitly all-day. If time contains "HH:MM", isAllDay MUST be false.
+4. **isAllDay**: true if no specific hour:minute is mentioned (e.g., "Buy milk tomorrow", "每週五完成webwork"), OR for events like "Jan 1st" that are typically all-day. This applies to recurring tasks too: no HH:MM -> MUST be true. ONLY set false when time contains "HH:MM". If time contains "HH:MM", isAllDay MUST be false.
 
 # LOGIC SELF-CHECK (before output):
 - No empty task strings. No duplicate tasks (same task text twice -> keep both only if times differ, else deduplicate).
@@ -109,6 +109,7 @@ The input may contain ONE task or MULTIPLE tasks. You MUST split correctly.
 # Input: "今天下午3點開會，明天早上9點看醫生" -> {"tasks":[{"task":"開會","time":"today 15:00","rule":null,"isAllDay":false},{"task":"看醫生","time":"tomorrow 09:00","rule":null,"isAllDay":false}]}
 # Input: "2026年3月6日開會" -> {"tasks":[{"task":"開會","time":"2026-03-06","rule":null,"isAllDay":true}]}
 # Input: "明年1月1號跨年" (now is 2026) -> {"tasks":[{"task":"跨年","time":"2027-01-01","rule":null,"isAllDay":true}]}
+# Input: "每週五完成微積分webwork" (no HH:MM, even with rule -> all-day) -> {"tasks":[{"task":"完成微積分webwork","time":"Friday","rule":"weekly:5","isAllDay":true}]}
 `;
 }
 
