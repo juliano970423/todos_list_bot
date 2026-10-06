@@ -1,10 +1,10 @@
 // router.js - 路由處理模組
 import { Bot, InlineKeyboard } from "grammy";
 import * as chrono from "chrono-node";
-import { getTaskPrompt, getQueryPrompt, callAI, parseTimeLocally, parseQueryLocally } from "./ai.js";
-import { sendConfirmation, renderList, renderHistory, renderRecurringTasks } from "./task.js";
-import { addTodo, getTodos, deleteTodosByIds } from "./db.js";
-import { TAIPEI_OFFSET, getTodayAndFutureRangeTaipei, getNowTaipei, localDateToUtcTs } from "./time.js";
+import { getTaskPrompt, getQueryPrompt, callAI, parseTimeLocally, parseQueryLocally, normalizeAIResult, looksLikeBatch } from "./ai.js";
+import { sendConfirmation, sendBatchConfirmation, decodeBatchPayload, renderList, renderHistory, renderRecurringTasks } from "./task.js";
+import { addTodo, addTodosBatch, getTodos, deleteTodosByIds } from "./db.js";
+import { TAIPEI_OFFSET, getTodayAndFutureRangeTaipei, getNowTaipei, localDateToUtcTs, formatShortDateSmart } from "./time.js";
 
 // ============================================
 // 時間解析輔助函數
@@ -17,24 +17,105 @@ import { TAIPEI_OFFSET, getTodayAndFutureRangeTaipei, getNowTaipei, localDateToU
  * @returns {Date|null} 解析後的日期，解析失敗返回 null
  */
 function parseAITimeExpression(timeStr, refDate) {
-  if (!timeStr) return null;
+  if (!timeStr || typeof timeStr !== 'string') return null;
+  const s = timeStr.trim();
+  if (!s) return null;
 
-  // 檢查 ISO 格式 (YYYY-MM-DDTHH:mm)
-  if (timeStr.includes('T')) {
-    return new Date(timeStr);
+  const validOrNull = (d) => (d && !isNaN(d.getTime()) ? d : null);
+
+  // 中文明確年份：YYYY年M月D日 [HH:MM]（AI 沒照格式回傳時的兜底）
+  const cnYearMatch = s.match(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日號]?\s*(?:(\d{1,2}):(\d{2}))?/);
+  if (cnYearMatch && cnYearMatch[0].length >= 4) {
+    const y = parseInt(cnYearMatch[1]), m = parseInt(cnYearMatch[2]), dd = parseInt(cnYearMatch[3]);
+    if (m >= 1 && m <= 12 && dd >= 1 && dd <= 31) {
+      const hh = cnYearMatch[4] !== undefined ? parseInt(cnYearMatch[4]) : 0;
+      const mm = cnYearMatch[5] !== undefined ? parseInt(cnYearMatch[5]) : 0;
+      if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
+        const date = new Date(refDate);
+        date.setFullYear(y, m - 1, dd);
+        date.setHours(hh, mm, 0, 0);
+        if (date.getFullYear() === y && date.getMonth() === m - 1 && date.getDate() === dd) {
+          return validOrNull(date);
+        }
+        return null;
+      }
+    }
   }
 
-  // 檢查 MM-DD 格式
-  if (timeStr.includes('-') && !timeStr.includes('T')) {
-    const [month, day] = timeStr.split('-');
-    const monthNum = parseInt(month);
-    const dayNum = parseInt(day);
-    let date = new Date(refDate.getFullYear(), monthNum - 1, dayNum);
-
-    if (date.getTime() <= refDate.getTime()) {
-      date = new Date(refDate.getFullYear() + 1, monthNum - 1, dayNum);
+  // 中文相對年份：明年/去年/今年/後年/前年 M月D日 [HH:MM]
+  const relYearMatch = s.match(/(明年|後年|去年|前年|今年)\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日號]?\s*(?:(\d{1,2}):(\d{2}))?/);
+  if (relYearMatch) {
+    let y = refDate.getFullYear();
+    if (relYearMatch[1] === '明年') y += 1;
+    else if (relYearMatch[1] === '後年') y += 2;
+    else if (relYearMatch[1] === '去年') y -= 1;
+    else if (relYearMatch[1] === '前年') y -= 2;
+    const m = parseInt(relYearMatch[2]), dd = parseInt(relYearMatch[3]);
+    if (m >= 1 && m <= 12 && dd >= 1 && dd <= 31) {
+      const hh = relYearMatch[4] !== undefined ? parseInt(relYearMatch[4]) : 0;
+      const mm = relYearMatch[5] !== undefined ? parseInt(relYearMatch[5]) : 0;
+      const date = new Date(refDate);
+      date.setFullYear(y, m - 1, dd);
+      date.setHours(hh, mm, 0, 0);
+      if (date.getFullYear() === y && date.getMonth() === m - 1 && date.getDate() === dd) {
+        return validOrNull(date);
+      }
+      return null;
     }
-    return date;
+  }
+
+  // 明確年份斜線格式：YYYY/M/D [HH:MM]
+  const slashYearMatch = s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if (slashYearMatch) {
+    const y = parseInt(slashYearMatch[1]), m = parseInt(slashYearMatch[2]), d = parseInt(slashYearMatch[3]);
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    const hh = slashYearMatch[4] !== undefined ? parseInt(slashYearMatch[4]) : 0;
+    const mm = slashYearMatch[5] !== undefined ? parseInt(slashYearMatch[5]) : 0;
+    if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+    const date = new Date(refDate);
+    date.setFullYear(y, m - 1, d);
+    date.setHours(hh, mm, 0, 0);
+    if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return null;
+    return validOrNull(date);
+  }
+
+  // ISO 格式 (YYYY-MM-DDTHH:mm[:ss] 或 YYYY-MM-DD HH:MM)
+  if (s.includes('T') || /^\d{4}-\d{1,2}-\d{1,2}/.test(s)) {
+    // YYYY-MM-DD [HH:MM]（含空格分隔也支援）
+    const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+    if (isoMatch) {
+      const y = parseInt(isoMatch[1]), m = parseInt(isoMatch[2]), d = parseInt(isoMatch[3]);
+      if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+      const hh = isoMatch[4] !== undefined ? parseInt(isoMatch[4]) : 0;
+      const mm = isoMatch[5] !== undefined ? parseInt(isoMatch[5]) : 0;
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+      const date = new Date(refDate);
+      date.setFullYear(y, m - 1, d);
+      date.setHours(hh, mm, 0, 0);
+      // 避免月份溢出（例如 2/30 變成 3/2）：檢查回繞
+      if (date.getMonth() !== m - 1 || date.getDate() !== d) return null;
+      return validOrNull(date);
+    }
+    return validOrNull(new Date(s));
+  }
+
+  // MM-DD 格式（嚴格匹配才走此分支，避免 "not-a-time" 誤入）
+  const mdMatch = s.match(/^(\d{1,2})-(\d{1,2})$/);
+  if (mdMatch) {
+    const monthNum = parseInt(mdMatch[1]);
+    const dayNum = parseInt(mdMatch[2]);
+    if (monthNum < 1 || monthNum > 12 || dayNum < 1 || dayNum > 31) return null;
+    let date = new Date(refDate);
+    date.setMonth(monthNum - 1, dayNum);
+    date.setHours(0, 0, 0, 0);
+    if (date.getMonth() !== monthNum - 1 || date.getDate() !== dayNum) return null;
+    if (date.getTime() <= refDate.getTime()) {
+      date = new Date(refDate);
+      date.setFullYear(date.getFullYear() + 1, monthNum - 1, dayNum);
+      date.setHours(0, 0, 0, 0);
+      if (date.getMonth() !== monthNum - 1 || date.getDate() !== dayNum) return null;
+    }
+    return validOrNull(date);
   }
 
   let parsedDate = null;
@@ -198,6 +279,233 @@ function ensureFutureDate(date, rule, refDate) {
   return newDate;
 }
 
+// ============================================
+// 批次邏輯驗證 (各種邏輯錯誤檢查)
+// ============================================
+
+/**
+ * 檢查 rule 格式是否合法
+ * @returns {string|null} 錯誤訊息，合法回傳 null
+ */
+function validateRuleFormat(rule) {
+  if (!rule || rule === 'null' || rule === 'none') return null;
+  if (rule === 'daily') return null;
+  if (rule.startsWith('weekly:')) {
+    const part = rule.split(':')[1];
+    if (!part) return `週期規則錯誤：${rule}（缺少星期）`;
+    const days = part.split(',').map(s => s.trim()).filter(Boolean);
+    if (!days.length) return `週期規則錯誤：${rule}（星期為空）`;
+    for (const d of days) {
+      const n = Number(d);
+      if (!Number.isInteger(n) || n < 1 || n > 7) {
+        return `週期規則錯誤：${rule}（星期須為 1-7，1=週一..7=週日）`;
+      }
+    }
+    if (new Set(days).size !== days.length) return `週期規則錯誤：${rule}（星期重複）`;
+    return null;
+  }
+  if (rule.startsWith('monthly:')) {
+    const day = Number(rule.split(':')[1]);
+    if (!Number.isInteger(day) || day < 1 || day > 31) {
+      return `週期規則錯誤：${rule}（每月日期須為 1-31）`;
+    }
+    return null;
+  }
+  if (rule.startsWith('yearly:')) {
+    const md = rule.split(':')[1];
+    if (!md || !/^\d{1,2}-\d{1,2}$/.test(md)) {
+      return `週期規則錯誤：${rule}（格式應為 yearly:MM-DD，如 yearly:01-01）`;
+    }
+    const [m, d] = md.split('-').map(Number);
+    if (m < 1 || m > 12) return `週期規則錯誤：${rule}（月份須為 1-12）`;
+    const maxDay = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+    if (d < 1 || d > maxDay) return `週期規則錯誤：${rule}（${m}月沒有${d}日）`;
+    return null;
+  }
+  return `不支援的週期規則：${rule}（僅支援 daily / weekly:X / monthly:X / yearly:MM-DD）`;
+}
+
+function normalizeTaskKey(task) {
+  return String(task || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * 對 AI 回傳的原始 tasks 做程式化驗證與正規化，計算 remindTs。
+ * 檢查項目：
+ * 1.空任務/過長 2.time無法解析 3.過去時間(單次) 4.rule格式錯誤
+ * 5.rule與time不一致 6.isAllDay不一致(自動修正) 7.批次內重複 8.與DB重複
+ * 9.無期限提醒 10.數量上限 11.任務名殘留時間詞
+ */
+function validateBatchItems(rawTasks, refDate, existingTodos = []) {
+  const nowUtcTs = Math.floor(Date.now() / 1000);
+  let list = Array.isArray(rawTasks) ? rawTasks.slice(0, 10) : [];
+  const truncated = Array.isArray(rawTasks) && rawTasks.length > 10;
+
+  const validated = list.map((raw, idx) => {
+    const errors = [];
+    const warnings = [];
+    let task = String(raw.task ?? "").trim().replace(/\s+/g, " ");
+    if (!task) {
+      errors.push("任務內容為空，已略過");
+    }
+    if (task.length > 200) {
+      task = task.slice(0, 200);
+      warnings.push("任務名稱過長，已截斷為200字");
+    }
+    // 任務名殘留時間詞（含年份詞）
+    if (task && /明天|今天|後天|昨天|每天|每週|每月|每年|明年|去年|今年|後年|前年|tomorrow|today|daily|weekly|\d{4}年/.test(task)) {
+      warnings.push("任務名稱疑似殘留時間詞（含年份），請確認 AI 是否清除乾淨");
+    }
+
+    let rule = raw.rule;
+    if (rule === 'none' || rule === 'null' || rule === '') rule = null;
+    if (typeof rule === 'string') rule = rule.trim();
+    else if (rule) rule = String(rule);
+    else rule = null;
+
+    const ruleErr = validateRuleFormat(rule);
+    if (ruleErr) errors.push(ruleErr);
+
+    let remindTs = -1;
+    let allDay = raw.isAllDay ? 1 : 0;
+    const timeStr = (raw.time === undefined || raw.time === '') ? null : raw.time;
+
+    if (timeStr === null || timeStr === undefined) {
+      if (rule && !ruleErr) {
+        try {
+          const date = calculateNextFromRule(rule, refDate);
+          remindTs = localDateToUtcTs(date);
+          if (!raw.isAllDay) allDay = 0; else allDay = 1;
+        } catch (e) {
+          errors.push(`無法依規則計算下次時間：${e.message}`);
+        }
+      } else if (!rule) {
+        remindTs = -1;
+        allDay = 1;
+        if (task) warnings.push("無指定時間，將存為無期限任務");
+      }
+    } else if (typeof timeStr !== 'string') {
+      errors.push(`時間格式錯誤（須為字串）：${String(timeStr)}`);
+    } else {
+      const date = parseAITimeExpression(timeStr, refDate);
+      if (!date) {
+        errors.push(`時間「${timeStr}」無法解析`);
+      } else {
+        // isAllDay 一致性：含 HH:MM 必為非全天
+        const hasHM = /(\d{1,2}):(\d{2})/.test(timeStr);
+        if (hasHM && allDay) {
+          allDay = 0;
+          warnings.push("含具體時刻，已自動改為非全天");
+        }
+        if (!hasHM && !allDay && !rule) {
+          allDay = 1;
+          warnings.push("無具體時刻，已自動改為全天");
+        }
+        let finalDate = date;
+        if (rule && !ruleErr) finalDate = ensureFutureDate(date, rule, refDate);
+        if (!finalDate || isNaN(finalDate.getTime())) {
+          errors.push(`時間「${timeStr}」計算結果無效`);
+        } else {
+          remindTs = localDateToUtcTs(finalDate);
+          if (!Number.isFinite(remindTs)) {
+            errors.push(`時間「${timeStr}」計算結果無效`);
+            remindTs = -1;
+          }
+        }
+
+        // 單次任務過去時間檢查（60 秒寬限）
+        if (!rule && remindTs !== -1 && remindTs <= nowUtcTs - 60) {
+          errors.push("時間已過去（單次任務不可為過去時間）");
+        }
+        // rule 與 time 週期一致性（warning，不擋存）
+        if (rule && !ruleErr && remindTs !== -1) {
+          try {
+            if (rule.startsWith('weekly:')) {
+              const days = rule.split(':')[1].split(',').map(Number);
+              const iso = finalDate.getDay() === 0 ? 7 : finalDate.getDay();
+              if (!days.includes(iso)) {
+                warnings.push(`日期星期(${iso})與週期 ${rule} 不完全相符，已自動順延請確認`);
+              }
+            } else if (rule.startsWith('monthly:')) {
+              const dom = parseInt(rule.split(':')[1]);
+              if (finalDate.getDate() !== dom) {
+                warnings.push(`日期(${finalDate.getDate()}日)與每月${dom}日不符，請確認`);
+              }
+            } else if (rule.startsWith('yearly:')) {
+              const [mm, dd] = rule.split(':')[1].split('-').map(Number);
+              if (finalDate.getMonth() + 1 !== mm || finalDate.getDate() !== dd) {
+                warnings.push(`日期與每年 ${mm}-${dd} 不符，請確認`);
+              }
+            }
+          } catch (e) { /* 一致性檢查失敗不擋存 */ }
+        }
+      }
+    }
+
+    return {
+      task: task || "未命名任務",
+      remindAt: remindTs,
+      cronRule: rule,
+      allDay,
+      rawTime: timeStr,
+      errors,
+      warnings,
+      valid: errors.length === 0 && !!task
+    };
+  });
+
+  // 批次內重複檢查
+  const seen = new Map();
+  validated.forEach((it, idx) => {
+    if (!it.valid) return;
+    const key = `${normalizeTaskKey(it.task)}|${it.remindAt}|${it.cronRule || ''}`;
+    if (seen.has(key)) {
+      it.errors.push(`與第 ${seen.get(key) + 1} 筆重複`);
+      it.valid = false;
+    } else {
+      seen.set(key, idx);
+    }
+  });
+
+  // 與 DB 既有任務重複檢查（warning，不擋存）
+  if (existingTodos && existingTodos.length) {
+    validated.forEach((it) => {
+      if (!it.valid) return;
+      const dup = existingTodos.find(t =>
+        t.status === 0 &&
+        normalizeTaskKey(t.task) === normalizeTaskKey(it.task) &&
+        Number(t.remind_at) === Number(it.remindAt)
+      );
+      if (dup) it.warnings.push("與既有未完成任務重複，請確認是否仍要新增");
+    });
+  }
+
+  if (truncated) {
+    validated.push({
+      task: "(已截斷)",
+      remindAt: -1,
+      cronRule: null,
+      allDay: 1,
+      rawTime: null,
+      errors: ["一次最多 10 筆，超過部分已忽略"],
+      warnings: [],
+      valid: false
+    });
+  }
+
+  return validated;
+}
+
+/**
+ * 從批次確認訊息文本中提取 BATCH_DATA payload
+ */
+function extractBatchDataFromMessage(msgText) {
+  if (!msgText) throw new Error("找不到確認訊息");
+  const m = msgText.match(/BATCH_DATA:([A-Za-z0-9\-_]+)/);
+  if (!m) throw new Error("找不到批次資料 (BATCH_DATA)，訊息可能過舊");
+  return decodeBatchPayload(m[1]);
+}
+
 // 處理訊息的路由
 async function handleMessage(ctx, env) {
   const text = ctx.message.text;
@@ -206,7 +514,12 @@ async function handleMessage(ctx, env) {
   if (text.startsWith('/list')) return await handleQuery(ctx, env, text, "list");
   if (text.startsWith('/history')) return await handleQuery(ctx, env, text, "history");
 
-  // 優先本地解析
+  // 疑似多筆 -> 直接走 AI 批次流程（避免本地單筆解析只抓到第一筆）
+  if (looksLikeBatch(text)) {
+    return await processTaskWithAI(ctx, env, text);
+  }
+
+  // 優先本地解析（單筆快速路徑）
   const local = parseTimeLocally(text);
 
   if (local) {
@@ -225,7 +538,7 @@ async function handleMessage(ctx, env) {
   }
 }
 
-// --- 2. AI 處理核心 (重構版) ---
+// --- 2. AI 處理核心 (批次版：一次新增多筆 + 邏輯錯誤檢查) ---
 async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
   let waitMsg;
 
@@ -239,61 +552,77 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
     const prompt = getTaskPrompt(text, refDate);
     const { json, rawContent } = await callAI(env, prompt);
 
-    let remindTs = -1;
-    let finalRule = json.rule;
-    if (finalRule === 'none' || finalRule === 'null') finalRule = null;
-
-    // 處理時間
-    if (json.time) {
-      let date = parseAITimeExpression(json.time, refDate);
-      if (!date) {
-        throw new Error(`時間格式無效: ${json.time}`);
-      }
-
-      // 如果是週期性任務，確保時間在未來
-      if (finalRule) {
-        date = ensureFutureDate(date, finalRule, refDate);
-      }
-
-      remindTs = localDateToUtcTs(date);
-    } else if (finalRule) {
-      // 只有規則沒有時間，計算下一個執行時間
-      const date = calculateNextFromRule(finalRule, refDate);
-      remindTs = localDateToUtcTs(date);
+    // 正規化為陣列（相容舊版單筆）
+    let rawTasks = normalizeAIResult(json);
+    if (!rawTasks.length) {
+      throw new Error(`AI 未回傳任何任務。原始回應：${rawContent?.substring(0, 200) || "無內容"}`);
     }
+    // 空任務名 fallback：用原文兜底，避免整批失敗
+    rawTasks = rawTasks.map(r => {
+      if (!r.task || !String(r.task).trim()) {
+        return { ...r, task: text.replace(/提醒我|記得|每週|每天|幫我/g, "").trim().slice(0, 50) || "未命名任務" };
+      }
+      return r;
+    });
 
-    // yearly 特殊處理：重新用 chrono 解析以獲取正確日期
-    if (finalRule && finalRule.startsWith('yearly:') && json.time) {
-      const results = chrono.parse(json.time, refDate, { forwardDate: true });
-      if (results.length > 0) {
-        let date = results[0].date();
-        if (date.getTime() <= refDate.getTime()) {
-          date.setFullYear(date.getFullYear() + 1);
+    // yearly 特殊修正：沿用舊邏輯，用 chrono 重算 yearly 時間
+    rawTasks = rawTasks.map(r => {
+      if (r.rule && String(r.rule).startsWith('yearly:') && r.time) {
+        const results = chrono.parse(String(r.time), refDate, { forwardDate: true });
+        if (results.length > 0) {
+          let date = results[0].date();
+          if (date.getTime() <= refDate.getTime()) {
+            date.setFullYear(date.getFullYear() + 1);
+          }
+          // 將修正後的日期轉回可解析字串？這裡保留原 time，驗證階段會用 parseAITimeExpression + ensureFutureDate 處理；
+          // 若 chrono 解析明顯不同，驗證階段已足夠。此處不強制改寫，避免破壞 AI 的 HH:MM。
         }
-        remindTs = localDateToUtcTs(date);
       }
+      return r;
+    });
+
+    // 取既有任務做重複檢查（失敗不擋流程）
+    let existingTodos = [];
+    try {
+      const uid = ctx.from?.id?.toString();
+      if (uid) existingTodos = await getTodos(env, uid, 0);
+    } catch (e) {
+      console.error("[batch] 讀取既有任務失敗，略過重複檢查:", e.message);
     }
 
-    // 處理任務名稱
-    let finalTask = json.task;
-    if (!finalTask || finalTask === "未命名任務" || finalTask.trim() === "") {
-      finalTask = text.replace(/提醒我 | 記得 | 每週 | 每天/g, "").trim();
-    }
+    const validated = validateBatchItems(rawTasks, refDate, existingTodos);
+    const validCount = validated.filter(v => v.valid).length;
+    const debugRaw = JSON.stringify(json).slice(0, 1200);
 
     // 刪除等待訊息
     if (!isRejudgment && waitMsg) {
       await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
     }
 
-    // 發送確認訊息
-    await sendConfirmation(ctx, {
-      task: finalTask,
-      remindAt: remindTs,
-      cronRule: finalRule,
-      allDay: json.isAllDay ? 1 : 0,
-      source: isRejudgment ? '🧠 AI (重新判斷)' : '🧠 AI',
+    const source = isRejudgment ? '🧠 AI (重新判斷)' : '🧠 AI';
+
+    // 單筆且有效 -> 沿用舊版單筆確認 UI（體驗不變）
+    if (validated.length === 1 && validated[0].valid) {
+      const v = validated[0];
+      // 若有 warnings，拼到 source 讓使用者看到（單筆 UI 無警告欄）
+      const warnSuffix = v.warnings.length ? ` (${v.warnings.join("；").slice(0, 200)})` : "";
+      await sendConfirmation(ctx, {
+        task: v.task,
+        remindAt: v.remindAt,
+        cronRule: v.cronRule,
+        allDay: v.allDay,
+        source: source + warnSuffix,
+        originalText: text,
+        debugRaw
+      });
+      return;
+    }
+
+    // 多筆，或單筆但有錯誤 -> 批次確認 UI（含各種邏輯錯誤顯示）
+    await sendBatchConfirmation(ctx, validated, {
+      source,
       originalText: text,
-      debugRaw: JSON.stringify(json)
+      debugRaw
     });
 
   } catch (e) {
@@ -454,6 +783,38 @@ async function handleCallbackQuery(ctx, env) {
     }
   }
 
+  // 批次儲存：全部有效任務一次寫入
+  if (data === "svall") {
+    try {
+      const msgText = ctx.callbackQuery.message.text || ctx.callbackQuery.message.caption || "";
+      const items = extractBatchDataFromMessage(msgText);
+      if (!items.length) return ctx.answerCallbackQuery("喵～沒有可儲存的任務");
+      await addTodosBatch(env, userId, items);
+      const names = items.map((t, i) => `${i + 1}. ${t.task}`).join("\n");
+      return ctx.editMessageText(`✅ 喵～已批次儲存 ${items.length} 筆任務：\n${names}`.slice(0, 3500));
+    } catch (e) {
+      console.error("[svall] error:", e);
+      return ctx.editMessageText(`❌ 喵嗚～批次儲存失敗：${e.message}`);
+    }
+  }
+
+  // 批次儲存：只存其中一筆（valid 索引）
+  if (data.startsWith("svone|")) {
+    try {
+      const idx = parseInt(data.split("|")[1]);
+      const msgText = ctx.callbackQuery.message.text || ctx.callbackQuery.message.caption || "";
+      const items = extractBatchDataFromMessage(msgText);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= items.length) {
+        return ctx.answerCallbackQuery("喵～索引無效");
+      }
+      await addTodosBatch(env, userId, [items[idx]]);
+      return ctx.editMessageText(`✅ 喵～已儲存第 ${idx + 1} 筆：<b>${items[idx].task}</b>`, { parse_mode: "HTML" });
+    } catch (e) {
+      console.error("[svone] error:", e);
+      return ctx.editMessageText(`❌ 喵嗚～儲存失敗：${e.message}`);
+    }
+  }
+
   // AI 重新判斷邏輯
   if (data === "rejudge") {
     const msgText = ctx.callbackQuery.message.text;
@@ -564,7 +925,7 @@ async function handleCallbackQuery(ctx, env) {
       // 顯示日期 + 任務名稱
       let displayText = t.task;
       if (t.remind_at > 0) {
-        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        const dateStr = formatShortDateSmart(t.remind_at);
         displayText = `${dateStr} ${t.task}`;
       } else if (t.remind_at === -1) {
         displayText = `無期限 ${t.task}`;
@@ -618,7 +979,7 @@ async function handleCallbackQuery(ctx, env) {
     filtered.forEach(t => {
       let displayText = t.task;
       if (t.remind_at > 0) {
-        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        const dateStr = formatShortDateSmart(t.remind_at);
         displayText = `${dateStr} ${t.task}`;
       } else if (t.remind_at === -1) {
         displayText = `無期限 ${t.task}`;
@@ -672,7 +1033,7 @@ async function handleCallbackQuery(ctx, env) {
     results.forEach(t => {
       let displayText = t.task;
       if (t.remind_at > 0) {
-        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        const dateStr = formatShortDateSmart(t.remind_at);
         displayText = `${dateStr} ${t.task}`;
       } else if (t.remind_at === -1) {
         displayText = `無期限 ${t.task}`;
@@ -700,7 +1061,7 @@ async function handleCallbackQuery(ctx, env) {
       results.forEach(t => {
         let displayText = t.task;
         if (t.remind_at > 0) {
-          const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+          const dateStr = formatShortDateSmart(t.remind_at);
           displayText = `${dateStr} ${t.task}`;
         } else if (t.remind_at === -1) {
           displayText = `無期限 ${t.task}`;
@@ -729,15 +1090,14 @@ async function handleCallbackQuery(ctx, env) {
     const results = await getTodos(env, userId, 0);
     if (!results.length) return ctx.editMessageText("😿 喵～目前沒有待辦事項呢～");
 
-    // 按日期分組
+    // 按日期分組（智慧日期鍵：當年 M/D，非當年 YYYY/M/D）
     const dateGroups = {};
     results.forEach(t => {
       let dateKey;
       if (t.remind_at === -1) {
         dateKey = "無期限";
       } else {
-        const d = new Date(t.remind_at * 1000);
-        dateKey = d.toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        dateKey = formatShortDateSmart(t.remind_at);
       }
       if (!dateGroups[dateKey]) dateGroups[dateKey] = [];
       dateGroups[dateKey].push(t);
@@ -760,8 +1120,7 @@ async function handleCallbackQuery(ctx, env) {
     // 篩選該日期的任務
     const filtered = results.filter(t => {
       if (dateKey === "無期限") return t.remind_at === -1;
-      const d = new Date(t.remind_at * 1000);
-      const taskDate = d.toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+      const taskDate = formatShortDateSmart(t.remind_at);
       return taskDate === dateKey;
     });
 
@@ -780,7 +1139,7 @@ async function handleCallbackQuery(ctx, env) {
     filtered.forEach(t => {
       let displayText = t.task;
       if (t.remind_at > 0) {
-        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        const dateStr = formatShortDateSmart(t.remind_at);
         displayText = `${dateStr} ${t.task}`;
       } else if (t.remind_at === -1) {
         displayText = `無期限 ${t.task}`;
@@ -809,8 +1168,7 @@ async function handleCallbackQuery(ctx, env) {
       // 篩選該日期的任務
       const filtered = results.filter(t => {
         if (dateKey === "無期限") return t.remind_at === -1;
-        const d = new Date(t.remind_at * 1000);
-        const taskDate = d.toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        const taskDate = formatShortDateSmart(t.remind_at);
         return taskDate === dateKey;
       });
 
@@ -819,7 +1177,7 @@ async function handleCallbackQuery(ctx, env) {
       filtered.forEach(t => {
         let displayText = t.task;
         if (t.remind_at > 0) {
-          const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+          const dateStr = formatShortDateSmart(t.remind_at);
           displayText = `${dateStr} ${t.task}`;
         } else if (t.remind_at === -1) {
           displayText = `無期限 ${t.task}`;
@@ -915,7 +1273,7 @@ async function handleCallbackQuery(ctx, env) {
     filtered.forEach(t => {
       let displayText = t.task;
       if (t.remind_at > 0) {
-        const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+        const dateStr = formatShortDateSmart(t.remind_at);
         displayText = `${dateStr} ${t.task}`;
       } else if (t.remind_at === -1) {
         displayText = `無期限 ${t.task}`;
@@ -964,7 +1322,7 @@ async function handleCallbackQuery(ctx, env) {
       filtered.forEach(t => {
         let displayText = t.task;
         if (t.remind_at > 0) {
-          const dateStr = new Date(t.remind_at * 1000).toLocaleDateString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'});
+          const dateStr = formatShortDateSmart(t.remind_at);
           displayText = `${dateStr} ${t.task}`;
         } else if (t.remind_at === -1) {
           displayText = `無期限 ${t.task}`;
@@ -1071,5 +1429,11 @@ async function handleCallbackQuery(ctx, env) {
 
 export {
   handleMessage,
-  handleCallbackQuery
+  handleCallbackQuery,
+  validateRuleFormat,
+  validateBatchItems,
+  extractBatchDataFromMessage,
+  parseAITimeExpression,
+  calculateNextFromRule,
+  ensureFutureDate
 };

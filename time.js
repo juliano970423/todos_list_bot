@@ -110,8 +110,11 @@ function getDateRangeTaipei(startDate, endDate) {
 // ============================================
 
 // --- 輔助：取得人類可讀的台北時間 ---
+// 注意：傳入的 dateObj 是 getNowTaipei() 的 +8h shifted clock；
+// 直接套 Asia/Taipei 會再 +8h（差 8 小時），所以先扣回偏移才是真正的台北牆鐘時間。
 function getTaipeiTimeString(dateObj) {
-  return dateObj.toLocaleString('zh-TW', {
+  const trueInstant = new Date(dateObj.getTime() - TAIPEI_OFFSET * 60000);
+  return trueInstant.toLocaleString('zh-TW', {
     timeZone: 'Asia/Taipei',
     year: 'numeric',
     month: '2-digit',
@@ -168,11 +171,70 @@ function getDayEndTimestamp() {
   return getTodayRangeTaipei().end;
 }
 
-// 將時間戳轉換為台北時間字串
+// 將時間戳轉換為台北時間字串（當年省略年份，非當年才帶年）
 function formatTimestampToTaipeiTime(timestamp) {
   if (timestamp === -1) return "無時間限制";
   const date = new Date(timestamp * 1000);
+  if (isCurrentTaipeiYear(timestamp)) {
+    return date.toLocaleString('zh-TW', {
+      timeZone: 'Asia/Taipei', hour12: false,
+      month: 'numeric', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+  }
   return date.toLocaleString('zh-TW', {timeZone:'Asia/Taipei', hour12:false});
+}
+
+// --- 年份顯示（智慧：當年省略年份，非當年才帶年，避免跨年混淆又保持簡潔） ---
+function getTaipeiYearOfTimestamp(timestamp) {
+  return new Date(timestamp * 1000).toLocaleString('en-US', { timeZone: 'Asia/Taipei', year: 'numeric' });
+}
+
+function getCurrentTaipeiYear() {
+  return new Date(Date.now()).toLocaleString('en-US', { timeZone: 'Asia/Taipei', year: 'numeric' });
+}
+
+function isCurrentTaipeiYear(timestamp) {
+  if (timestamp === -1 || !timestamp) return true;
+  try {
+    return getTaipeiYearOfTimestamp(timestamp) === getCurrentTaipeiYear();
+  } catch (e) {
+    return true;
+  }
+}
+
+// 全天任務日期：當年 M/D，非當年 YYYY/M/D
+function formatDateSmart(timestamp) {
+  if (timestamp === -1 || !timestamp) return "無期限";
+  const withYear = !isCurrentTaipeiYear(timestamp);
+  return new Date(timestamp * 1000).toLocaleString('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    ...(withYear ? { year: 'numeric' } : {}),
+    month: 'numeric', day: 'numeric'
+  });
+}
+
+// 非全天任務日期時間：當年 M/D HH:MM，非當年 YYYY/M/D HH:MM
+function formatDateTimeSmart(timestamp) {
+  if (timestamp === -1 || !timestamp) return "無期限";
+  const withYear = !isCurrentTaipeiYear(timestamp);
+  return new Date(timestamp * 1000).toLocaleString('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    ...(withYear ? { year: 'numeric' } : {}),
+    month: 'numeric', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  });
+}
+
+// 短日期（圖片/按鈕用）：當年 M/D，非當年 YYYY/M/D
+function formatShortDateSmart(timestamp) {
+  if (!timestamp || timestamp === -1) return '';
+  const withYear = !isCurrentTaipeiYear(timestamp);
+  return new Date(timestamp * 1000).toLocaleString('zh-TW', {
+    timeZone: 'Asia/Taipei',
+    ...(withYear ? { year: 'numeric' } : {}),
+    month: 'numeric', day: 'numeric'
+  });
 }
 
 /**
@@ -222,6 +284,12 @@ export {
   getDayStartTimestamp,
   getDayEndTimestamp,
   formatTimestampToTaipeiTime,
+  formatDateSmart,
+  formatDateTimeSmart,
+  formatShortDateSmart,
+  isCurrentTaipeiYear,
+  getTaipeiYearOfTimestamp,
+  getCurrentTaipeiYear,
   getMorningReportRangeTaipei,
   getEveningReportRangeTaipei
 };

@@ -27,6 +27,29 @@ async function addTodo(env, userId, task, remindAt, cronRule, allDay) {
     .bind(userId, task, parseInt(remindAt), cronRule === 'n' ? null : cronRule, parseInt(allDay)).run();
 }
 
+// 批次新增待辦事項 (一次新增多筆)
+// items: [{task, remindAt, cronRule, allDay}]
+async function addTodosBatch(env, userId, items) {
+  if (!items || !items.length) return 0;
+  const stmts = items.map(it =>
+    env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, cron_rule, all_day, status) VALUES (?, ?, ?, ?, ?, 0)")
+      .bind(
+        userId,
+        String(it.task).slice(0, 200),
+        parseInt(it.remindAt),
+        (!it.cronRule || it.cronRule === 'n' || it.cronRule === 'null') ? null : it.cronRule,
+        parseInt(it.allDay) ? 1 : 0
+      )
+  );
+  // D1 batch 原子寫入；非 D1 環境 fallback 逐筆
+  if (env.DB.batch) {
+    await env.DB.batch(stmts);
+  } else {
+    for (const s of stmts) await s.run();
+  }
+  return items.length;
+}
+
 // 獲取待辦清單
 async function getTodos(env, userId, status = 0) {
   const { results } = await env.DB.prepare("SELECT * FROM todos WHERE user_id = ? AND status = ?").bind(userId, status).all();
@@ -68,6 +91,7 @@ async function addHistory(env, userId, task, remindAt) {
 export {
   initDatabase,
   addTodo,
+  addTodosBatch,
   getTodos,
   getTodosByTimeRange,
   updateTodoStatus,

@@ -1,6 +1,6 @@
 // task.js - 任務處理模組
 import { InlineKeyboard } from "grammy";
-import { formatTimestampToTaipeiTime, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei, getMorningReportRangeTaipei, getEveningReportRangeTaipei } from "./time.js";
+import { formatTimestampToTaipeiTime, formatDateSmart, formatDateTimeSmart, formatShortDateSmart, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei, getMorningReportRangeTaipei, getEveningReportRangeTaipei } from "./time.js";
 import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime } from "./db.js";
 import { calculateNext } from "./time.js";
 import { generateScheduleImage } from "./image.js";
@@ -50,9 +50,9 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
       if (t.remind_at > 0) {
         if (t.all_day) {
-          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
+          timeDisplay = formatDateSmart(t.remind_at) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
         } else {
-          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false}) + ` (${translateRule(t.cron_rule)})`;
+          timeDisplay = formatDateTimeSmart(t.remind_at) + ` (${translateRule(t.cron_rule)})`;
         }
       } else {
         timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
@@ -155,17 +155,17 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     if (t.cron_rule) {
       if (t.remind_at > 0) {
         if (t.all_day) {
-          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
+          timeDisplay = formatDateSmart(t.remind_at) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
         } else {
-          timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false}) + ` (${translateRule(t.cron_rule)})`;
+          timeDisplay = formatDateTimeSmart(t.remind_at) + ` (${translateRule(t.cron_rule)})`;
         }
       } else {
         timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
       }
     } else if (t.all_day) {
-      timeDisplay = "☀️ " + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)";
+      timeDisplay = "☀️ " + formatDateSmart(t.remind_at) + " (全天)";
     } else if (t.remind_at !== -1) {
-      timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
+      timeDisplay = formatDateTimeSmart(t.remind_at);
     } else {
       timeDisplay = "無期限";
     }
@@ -226,10 +226,9 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
   }
 }
 
-// 輔助：格式化時間戳為 M/D
+// 輔助：格式化時間戳為 YYYY/M/D（帶年）
 function formatDateStr(ts) {
-  if (!ts || ts === -1) return '';
-  return new Date(ts * 1000).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei', month: 'numeric', day: 'numeric' });
+  return formatShortDateSmart(ts);
 }
 
 // --- 5. 渲染歷史 (History) ---
@@ -258,10 +257,9 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
   results.forEach((t, i) => {
     let timeStr;
     if (t.all_day) {
-      // 對於全天任務，只顯示日期
-      timeStr = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)";
+      timeStr = formatDateSmart(t.remind_at) + " (全天)";
     } else {
-      timeStr = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
+      timeStr = formatDateTimeSmart(t.remind_at);
     }
     msg += `${i+1}. [${timeStr}] ✅ ${t.task}\n`;
   });
@@ -290,6 +288,41 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
     console.error("[renderHistory] 圖片產生失敗，fallback 為純文字:", e);
     await ctx.reply(msg, { parse_mode: "HTML" });
   }
+}
+
+// --- 批次 payload 編解碼 (stateless: 數據藏在訊息文本，callback 只帶短 key) ---
+function encodeBatchPayload(items) {
+  const minimal = items.map(it => ({
+    t: String(it.task).slice(0, 200),
+    ts: parseInt(it.remindAt),
+    r: (!it.cronRule || it.cronRule === 'null') ? null : it.cronRule,
+    a: it.allDay ? 1 : 0
+  }));
+  const json = JSON.stringify(minimal);
+  // utf8-safe base64 (Workers 無 Buffer)
+  const utf8 = unescape(encodeURIComponent(json));
+  const b64 = btoa(utf8);
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeBatchPayload(str) {
+  if (!str) throw new Error("缺少批次資料");
+  let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (b64.length % 4) b64 += '=';
+  const bin = atob(b64);
+  const json = decodeURIComponent(escape(bin));
+  const arr = JSON.parse(json);
+  if (!Array.isArray(arr)) throw new Error("批次資料格式錯誤");
+  return arr.map(o => ({
+    task: String(o.t || "").slice(0, 200),
+    remindAt: parseInt(o.ts),
+    cronRule: o.r || null,
+    allDay: o.a ? 1 : 0
+  }));
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // --- 6. 確認與儲存 (UI) ---
@@ -332,6 +365,69 @@ async function sendConfirmation(ctx, state) {
   // 如果有 debugRaw，顯示在訊息下方 (使用單行代碼格式，避免過長)
   if (state.debugRaw) {
       msg += `\n\n🛠 <b>AI 原始數據：</b>\n<code>${state.debugRaw}</code>`;
+  }
+
+  await ctx.reply(msg, { parse_mode: "HTML", reply_markup: kb });
+}
+
+// --- 6b. 批次確認與儲存 (一次新增多筆 + 邏輯錯誤檢查顯示) ---
+// items: [{task, remindAt, cronRule, allDay, valid, errors[], warnings[], source}]
+async function sendBatchConfirmation(ctx, items, opts = {}) {
+  const validItems = items.filter(it => it.valid);
+  const invalidCount = items.length - validItems.length;
+
+  let msg = `📌 <b>批次任務確認喵～</b> (共 ${items.length} 筆，有效 ${validItems.length} 筆${invalidCount ? `，${invalidCount} 筆有問題` : ''})\n`;
+
+  items.forEach((it, idx) => {
+    let timeStr;
+    if (it.remindAt === -1) {
+      timeStr = "無期限";
+    } else if (it.allDay) {
+      timeStr = formatDateSmart(it.remindAt) + " (全天)";
+    } else {
+      timeStr = formatDateTimeSmart(it.remindAt);
+    }
+    const ruleText = it.cronRule ? translateRule(it.cronRule) : "單次";
+    const mark = it.valid ? "✅" : "❌";
+    msg += `\n${mark} <b>${idx + 1}.</b> ${escapeHtml(it.task)}\n   ⏰ ${escapeHtml(timeStr)} | 🔄 ${escapeHtml(ruleText)}`;
+    if (it.warnings && it.warnings.length) {
+      it.warnings.forEach(w => { msg += `\n   ⚠️ ${escapeHtml(w)}`; });
+    }
+    if (it.errors && it.errors.length) {
+      it.errors.forEach(e => { msg += `\n   ⛔ ${escapeHtml(e)}`; });
+    }
+  });
+
+  msg += `\n\n🔍 來源：${escapeHtml(opts.source || '🧠 AI (批次)')}`;
+  if (opts.originalText) {
+    msg += `\n💬 原始輸入：<code>${escapeHtml(opts.originalText).slice(0, 500)}</code>`;
+  }
+  if (opts.debugRaw) {
+    msg += `\n\n🛠 <b>AI 原始數據：</b>\n<code>${escapeHtml(opts.debugRaw).slice(0, 800)}</code>`;
+  }
+
+  if (!validItems.length) {
+    msg += `\n\n❌ 沒有可儲存的有效任務，請修改後重試喵～`;
+    await ctx.reply(msg, { parse_mode: "HTML" });
+    return;
+  }
+
+  // stateless 批次數據：只存有效任務，避免把錯誤任務寫入
+  const payload = encodeBatchPayload(validItems);
+  msg += `\n\nBATCH_DATA:${payload}`;
+
+  const kb = new InlineKeyboard()
+    .text(`✅ 全部儲存 (${validItems.length}筆)`, "svall")
+    .text("❌ 取消", "cancel")
+    .row()
+    .text("🤖 AI 重新判斷喵", "rejudge");
+
+  // 若有多筆，逐筆儲存按鈕（每行一個，callback 只帶 index，數據從訊息解析）
+  if (validItems.length > 1 && validItems.length <= 5) {
+    kb.row();
+    validItems.forEach((_, i) => {
+      kb.text(`存#${i + 1}`, `svone|${i}`);
+    });
   }
 
   await ctx.reply(msg, { parse_mode: "HTML", reply_markup: kb });
@@ -427,20 +523,9 @@ async function processScheduledReminders(bot, env) {
             if (t.cron_rule) {
               timeStr = `🔄 ${translateRule(t.cron_rule)}`;
             } else if (t.all_day) {
-              timeStr = '☀️ ' + new Date(t.remind_at * 1000).toLocaleString('zh-TW', {
-                timeZone: 'Asia/Taipei',
-                month: 'numeric',
-                day: 'numeric'
-              }) + ' (全天)';
+              timeStr = '☀️ ' + formatDateSmart(t.remind_at) + ' (全天)';
             } else if (t.remind_at !== -1) {
-              timeStr = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {
-                timeZone: 'Asia/Taipei',
-                month: 'numeric',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: false
-              });
+              timeStr = formatDateTimeSmart(t.remind_at);
             } else {
               timeStr = '無期限';
             }
@@ -454,8 +539,8 @@ async function processScheduledReminders(bot, env) {
             try {
               const reportType = isMorning ? 'morning' : 'evening';
               const reportTitle = isMorning ? '今日待辦' : '今晚及明日待辦';
-              const nowTaipeiDate = getNowTaipei();
-              const dateStr = nowTaipeiDate.toLocaleString('zh-TW', {
+              // 用真實 instant 渲染台北日期（getNowTaipei 是 +8h shifted clock，不可再套 timeZone）
+              const dateStr = new Date(Date.now()).toLocaleString('zh-TW', {
                 timeZone: 'Asia/Taipei',
                 month: 'numeric',
                 day: 'numeric',
@@ -501,9 +586,9 @@ async function renderRecurringTasks(ctx, env, tasks) {
 
     if (t.remind_at > 0) {
       if (t.all_day) {
-        timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric'}) + " (全天)";
+        timeDisplay = formatDateSmart(t.remind_at) + " (全天)";
       } else {
-        timeDisplay = new Date(t.remind_at * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false});
+        timeDisplay = formatDateTimeSmart(t.remind_at);
       }
       timeDisplay += ` (${translateRule(t.cron_rule)})`;
     } else {
@@ -523,6 +608,9 @@ export {
   renderList,
   renderHistory,
   sendConfirmation,
+  sendBatchConfirmation,
+  encodeBatchPayload,
+  decodeBatchPayload,
   processScheduledReminders,
   translateRule,
   renderRecurringTasks

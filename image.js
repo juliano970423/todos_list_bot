@@ -1,4 +1,5 @@
 // image.js - SVG 圖片產生模組
+import { formatDateSmart, formatDateTimeSmart } from "./time.js";
 
 /**
  * 轉義 HTML 特殊字元（用於 SVG 文字）
@@ -13,28 +14,17 @@ function escapeXml(str) {
 }
 
 /**
- * 格式化時間戳為台北時間 HH:MM
+ * 格式化時間戳為台北時間日期（智慧：當年省略年份，非當年才帶年）
  */
-function formatTime(ts) {
-  if (!ts || ts === -1) return '';
-  return new Date(ts * 1000).toLocaleString('zh-TW', {
-    timeZone: 'Asia/Taipei',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+function formatDate(ts) {
+  return formatDateSmart(ts);
 }
 
 /**
- * 格式化時間戳為台北時間 M/D
+ * 格式化時間戳為台北時間日期時間（智慧：當年省略年份）
  */
-function formatDate(ts) {
-  if (!ts || ts === -1) return '';
-  return new Date(ts * 1000).toLocaleString('zh-TW', {
-    timeZone: 'Asia/Taipei',
-    month: 'numeric',
-    day: 'numeric',
-  });
+function formatDateTime(ts) {
+  return formatDateTimeSmart(ts);
 }
 
 /**
@@ -73,7 +63,7 @@ export function generateScheduleImage(tasks, options = {}) {
   const isHistory = type === 'history';
   const emoji = isHistory ? '📚' : (type === 'morning' ? '☀️' : type === 'evening' ? '🌙' : '📋');
 
-  // 準備任務資料
+  // 準備任務資料（時間一律帶年）
   const items = tasks.map((t) => {
     let timeText = '';
     if (t.cron_rule) {
@@ -81,7 +71,7 @@ export function generateScheduleImage(tasks, options = {}) {
     } else if (t.all_day) {
       timeText = `全天 ${formatDate(t.remind_at)}`;
     } else if (t.remind_at && t.remind_at !== -1) {
-      timeText = formatTime(t.remind_at);
+      timeText = formatDateTime(t.remind_at);
     } else {
       timeText = '無期限';
     }
