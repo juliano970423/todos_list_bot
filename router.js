@@ -817,6 +817,44 @@ async function handleCallbackQuery(ctx, env) {
     }
   }
 
+  // ---- 信箱摘要批次轉待辦 (EMAIL_BATCH_DATA) ----
+  function extractEmailBatchData(msgText) {
+    if (!msgText) throw new Error("找不到確認訊息");
+    const m = msgText.match(/EMAIL_BATCH_DATA:([A-Za-z0-9\-_]+)/);
+    if (!m) throw new Error("找不到批次資料 (EMAIL_BATCH_DATA)，訊息可能過舊");
+    return decodeBatchPayload(m[1]);
+  }
+
+  if (data === "emsvall") {
+    try {
+      const msgText = ctx.callbackQuery.message.text || ctx.callbackQuery.message.caption || "";
+      const items = extractEmailBatchData(msgText);
+      if (!items.length) return ctx.answerCallbackQuery("喵～沒有可儲存的待辦");
+      await addTodosBatch(env, userId, items);
+      const names = items.map((t, i) => `${i + 1}. ${t.task}`).join("\n");
+      return ctx.editMessageText(`✅ 喵～已把信件待辦儲存 ${items.length} 筆：\n${names}`.slice(0, 3500));
+    } catch (e) {
+      console.error("[emsvall] error:", e);
+      return ctx.editMessageText(`❌ 喵嗚～信件待辦批次儲存失敗：${e.message}`);
+    }
+  }
+
+  if (data.startsWith("emsvone|")) {
+    try {
+      const idx = parseInt(data.split("|")[1]);
+      const msgText = ctx.callbackQuery.message.text || ctx.callbackQuery.message.caption || "";
+      const items = extractEmailBatchData(msgText);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= items.length) {
+        return ctx.answerCallbackQuery("喵～索引無效");
+      }
+      await addTodosBatch(env, userId, [items[idx]]);
+      return ctx.editMessageText(`✅ 喵～已儲存信件待辦 第 ${idx + 1} 筆：<b>${items[idx].task}</b>`, { parse_mode: "HTML" });
+    } catch (e) {
+      console.error("[emsvone] error:", e);
+      return ctx.editMessageText(`❌ 喵嗚～信件待辦儲存失敗：${e.message}`);
+    }
+  }
+
   // AI 重新判斷邏輯
   if (data === "rejudge") {
     const msgText = ctx.callbackQuery.message.text;

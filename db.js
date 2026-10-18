@@ -19,6 +19,48 @@ async function initDatabase(env) {
   } catch (e) {
     console.error("資料庫初始化失敗:", e.message);
   }
+
+  // Email digest 狀態表（每個信箱一筆）
+  try {
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS email_state (
+        mailbox_key TEXT PRIMARY KEY,
+        processed_uidls TEXT DEFAULT '[]',
+        last_digest_date TEXT DEFAULT '',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+  } catch (e) {
+    console.error("email_state 初始化失敗:", e.message);
+  }
+}
+
+// --- email_state 操作 ---
+
+async function getEmailState(env, mailboxKey) {
+  try {
+    const row = await env.DB.prepare("SELECT * FROM email_state WHERE mailbox_key = ?").bind(mailboxKey).first();
+    if (!row) return { processed: [], lastDigestDate: "" };
+    let processed = [];
+    try { processed = JSON.parse(row.processed_uidls || "[]"); } catch { processed = []; }
+    return { processed, lastDigestDate: row.last_digest_date || "" };
+  } catch {
+    return { processed: [], lastDigestDate: "" };
+  }
+}
+
+async function saveEmailState(env, mailboxKey, processed, lastDigestDate) {
+  // processed 上限 500，超出時保留最新的（陣列尾端）
+  let arr = Array.isArray(processed) ? processed : [];
+  if (arr.length > 500) arr = arr.slice(-500);
+  await env.DB.prepare(`
+    INSERT INTO email_state (mailbox_key, processed_uidls, last_digest_date, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(mailbox_key) DO UPDATE SET
+      processed_uidls = excluded.processed_uidls,
+      last_digest_date = excluded.last_digest_date,
+      updated_at = CURRENT_TIMESTAMP
+  `).bind(mailboxKey, JSON.stringify(arr), String(lastDigestDate || "")).run();
 }
 
 // 新增待辦事項
@@ -98,5 +140,7 @@ export {
   deleteTodosByIds,
   deleteTodosByStatus,
   updateCronTodoNextTime,
-  addHistory
+  addHistory,
+  getEmailState,
+  saveEmailState
 };
