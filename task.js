@@ -64,14 +64,19 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     if (!recurringTasks.length) return ctx.reply(`📋 <b>${escapeHtml(label)}</b>\n😿 喵～目前沒有例行性任務呢～`, { parse_mode: "HTML" });
 
     let msg = `📋 <b>${escapeHtml(label)}</b>\n`;
+    const nowTsList = Math.floor(Date.now() / 1000);
     recurringTasks.forEach((t, i) => {
       let timeDisplay = "";
 
-      if (t.remind_at > 0) {
-        if (t.all_day) {
-          timeDisplay = formatDateSmart(t.remind_at) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
+      if (t.remind_at > 0 && t.cron_rule) {
+        // 顯示下次發生日，而不是資料庫裡可能已過期的 remind_at
+        const nextTs = calculateNext(t.remind_at, t.cron_rule, nowTsList);
+        if (nextTs && nextTs > 0) {
+          timeDisplay = "下次 " + (t.all_day
+            ? formatDateSmart(nextTs) + " (全天)"
+            : formatDateTimeSmart(nextTs)) + ` (${translateRule(t.cron_rule)})`;
         } else {
-          timeDisplay = formatDateTimeSmart(t.remind_at) + ` (${translateRule(t.cron_rule)})`;
+          timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
         }
       } else {
         timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
@@ -94,11 +99,23 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
   });
   if (!filtered.length) return ctx.reply(`😿 喵～${escapeHtml(label)} 沒有待辦事項呢～`);
 
+  // 週期任務以「範圍內下次發生日」作為顯示與排序依據，避免舊 remind_at 誤導（如 /list 明年 顯示去年的日期）
+  const effTs = new Map();
+  for (const t of filtered) {
+    if (t.cron_rule && t.remind_at > 0) {
+      const occ = nextOccurrenceInRange(t.cron_rule, t.remind_at, start, end);
+      effTs.set(t.id, occ !== null ? occ : t.remind_at);
+    } else {
+      effTs.set(t.id, t.remind_at);
+    }
+  }
+
   // 排序：先發生的在前面，無期限(-1)放最後
   filtered.sort((a, b) => {
-    if (a.remind_at === -1) return 1;
-    if (b.remind_at === -1) return -1;
-    return a.remind_at - b.remind_at;
+    const ea = effTs.get(a.id), eb = effTs.get(b.id);
+    if (ea === -1) return 1;
+    if (eb === -1) return -1;
+    return ea - eb;
   });
 
   let msg = `📋 <b>${escapeHtml(label)} 任務清單喵～</b>\n`;
@@ -106,11 +123,12 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     let timeDisplay = "";
 
     if (t.cron_rule) {
-      if (t.remind_at > 0) {
+      const showTs = effTs.get(t.id);
+      if (showTs > 0) {
         if (t.all_day) {
-          timeDisplay = formatDateSmart(t.remind_at) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
+          timeDisplay = formatDateSmart(showTs) + " (全天)" + ` (${translateRule(t.cron_rule)})`;
         } else {
-          timeDisplay = formatDateTimeSmart(t.remind_at) + ` (${translateRule(t.cron_rule)})`;
+          timeDisplay = formatDateTimeSmart(showTs) + ` (${translateRule(t.cron_rule)})`;
         }
       } else {
         timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
@@ -152,10 +170,12 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
   // 產生圖片並發送
   const dateRange = [];
   if (filtered.length > 0) {
-    if (filtered[0].remind_at > 0) dateRange.push(formatDateStr(filtered[0].remind_at));
+    const firstEff = effTs.get(filtered[0].id);
+    if (firstEff > 0) dateRange.push(formatDateStr(firstEff));
     if (filtered.length > 1) {
       const last = filtered[filtered.length - 1];
-      if (last.remind_at > 0) dateRange.push(formatDateStr(last.remind_at));
+      const lastEff = effTs.get(last.id);
+      if (lastEff > 0) dateRange.push(formatDateStr(lastEff));
     }
   }
 
@@ -421,6 +441,48 @@ function recurringMatchesRange(cronRule, startTs, endTs) {
   }
 
   return false;
+}
+
+// 週期任務在 [startTs, endTs] 範圍內的第一次發生日（顯示用）
+// 時:分沿用 baseTs（原 remind_at）；若 baseTs 本身就在範圍內或無規則，回傳 null（呼叫端直接顯示原時間）
+// 台北日曆判斷，與 recurringMatchesRange 同一套語意
+function nextOccurrenceInRange(cronRule, baseTs, startTs, endTs) {
+  if (!cronRule || cronRule === 'none' || cronRule === 'null') return null;
+  const base = Number(baseTs);
+  if (!Number.isFinite(base) || base <= 0) return null;
+  const start = Number(startTs), end = Number(endTs);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  if (base >= start && base <= end) return null;
+
+  const TAIPEI_CLOCK_MS = TAIPEI_OFFSET * 60000;
+  const clock = new Date(base * 1000 + TAIPEI_CLOCK_MS);
+  const hh = clock.getUTCHours(), mm = clock.getUTCMinutes(), ss = clock.getUTCSeconds();
+
+  const cursor = new Date(start * 1000 + TAIPEI_CLOCK_MS);
+  cursor.setUTCHours(0, 0, 0, 0);
+  const endClock = end * 1000 + TAIPEI_CLOCK_MS;
+  for (let i = 0; i < 400 && cursor.getTime() <= endClock; i++, cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+    const y = cursor.getUTCFullYear(), mo = cursor.getUTCMonth(), dd = cursor.getUTCDate();
+    let hit = false;
+    if (cronRule === 'daily') hit = true;
+    else if (cronRule.startsWith('weekly:')) {
+      const iso = cursor.getUTCDay() === 0 ? 7 : cursor.getUTCDay();
+      hit = cronRule.split(':')[1].split(',').map(s => parseInt(s.trim())).includes(iso);
+    } else if (cronRule.startsWith('monthly:')) {
+      const want = parseInt(cronRule.split(':')[1]);
+      const lastDay = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
+      // 該月沒有 31 日時 clamp 到月末（與 calculateNext 同語意）
+      hit = dd === want || (dd === lastDay && want > lastDay);
+    } else if (cronRule.startsWith('yearly:')) {
+      const [m, d2] = cronRule.split(':')[1].split('-').map(Number);
+      hit = (mo + 1) === m && dd === d2;
+    }
+    if (hit) {
+      const ts = Math.floor(Date.UTC(y, mo, dd, hh, mm, ss) / 1000) - TAIPEI_OFFSET * 60;
+      if (ts >= start && ts <= end) return ts;
+    }
+  }
+  return null;
 }
 
 // --- 6. 確認與儲存 (UI) ---
@@ -748,5 +810,6 @@ export {
   chunkText,
   sendChunked,
   sendBotMessageHtml,
-  recurringMatchesRange
+  recurringMatchesRange,
+  nextOccurrenceInRange
 };
