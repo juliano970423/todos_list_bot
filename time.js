@@ -173,9 +173,9 @@ function calculateNext(lastTs, rule, nowTs = null) {
       d.setUTCDate(1);
       d.setUTCFullYear(d.getUTCFullYear() + 1);
       d.setUTCMonth(mo);
-      const y = d.getUTCFullYear();
-      const isLeap = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0));
-      d.setUTCDate(mo === 1 && day === 29 && !isLeap ? 28 : day);
+      // 該月沒有這一天（2/29 非閏年、xx-31 小月）統一 clamp 到月末
+      const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+      d.setUTCDate(Math.min(day, lastDay));
     } else {
       // 未支援的規則：往後一天，避免同一時間重複觸發
       d.setUTCDate(d.getUTCDate() + 1);

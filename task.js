@@ -415,16 +415,18 @@ function recurringMatchesRange(cronRule, startTs, endTs) {
     return false;
   }
 
-  if (cronRule.startsWith('monthly:')) {
-    const dayOfMonth = parseInt(cronRule.split(':')[1]);
-    if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) return false;
-    const cursor = new Date(startAbs + TAIPEI_CLOCK_MS);
-    while (cursor.getTime() - TAIPEI_CLOCK_MS <= endAbs) {
-      if (cursor.getUTCDate() === dayOfMonth) return true;
-      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    if (cronRule.startsWith('monthly:')) {
+      const dayOfMonth = parseInt(cronRule.split(':')[1]);
+      if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) return false;
+      const cursor = new Date(startAbs + TAIPEI_CLOCK_MS);
+      while (cursor.getTime() - TAIPEI_CLOCK_MS <= endAbs) {
+        // 小月 clamp 到月末（與 calculateNext 同語意：monthly:31 在二月 = 2/28）
+        const lastDay = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 0)).getUTCDate();
+        if (cursor.getUTCDate() === dayOfMonth || (cursor.getUTCDate() === lastDay && dayOfMonth > lastDay)) return true;
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+      return false;
     }
-    return false;
-  }
 
   if (cronRule.startsWith('yearly:')) {
     let month = 0, day = 0;
@@ -434,7 +436,10 @@ function recurringMatchesRange(cronRule, startTs, endTs) {
     if (month < 1 || month > 12) return false;
     const cursor = new Date(startAbs + TAIPEI_CLOCK_MS);
     while (cursor.getTime() - TAIPEI_CLOCK_MS <= endAbs) {
-      if (cursor.getUTCMonth() + 1 === month && cursor.getUTCDate() === day) return true;
+      // 該月沒有這一天（2/29 非閏年、xx-31 小月）時 clamp 到月末（與 calculateNext 同語意）
+      const lastDay = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 0)).getUTCDate();
+      const isTargetMonth = cursor.getUTCMonth() + 1 === month;
+      if (isTargetMonth && (cursor.getUTCDate() === day || (cursor.getUTCDate() === lastDay && day > lastDay))) return true;
       cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
     return false;
@@ -475,7 +480,8 @@ function nextOccurrenceInRange(cronRule, baseTs, startTs, endTs) {
       hit = dd === want || (dd === lastDay && want > lastDay);
     } else if (cronRule.startsWith('yearly:')) {
       const [m, d2] = cronRule.split(':')[1].split('-').map(Number);
-      hit = (mo + 1) === m && dd === d2;
+      const lastDay = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
+      hit = (mo + 1) === m && (dd === d2 || (dd === lastDay && d2 > lastDay));
     }
     if (hit) {
       const ts = Math.floor(Date.UTC(y, mo, dd, hh, mm, ss) / 1000) - TAIPEI_OFFSET * 60;
