@@ -71,10 +71,10 @@ export default {
    - <code>POP3_PORT</code> = 995
    - <code>POP3_TLS</code> = tls（其他選項：starttls / none）
    - <code>POP3_USER</code> = 你的學號（不用加 @ntu.edu.tw）
-   - <code>POP3_PASS</code> = 你的計中密碼
-   - <code>DIGEST_CHAT_ID</code> = 接收摘要的 chat id（通常是你的 Telegram user id）
+    - <code>POP3_PASS</code> = 你的計中密碼
+    - <code>DIGEST_CHAT_ID</code> = 可不設（單人使用會自動從資料庫推導你的 chat）；多人群組才需要指定
  • 設定方式 2（進階、支持多信箱）：設定一個 <code>EMAIL_ACCOUNTS</code> secret 放 JSON 陣列，一格一個信箱：
-   <code>[{"name":"ntu","protocol":"pop3","host":"msa.ntu.edu.tw","port":995,"mode":"tls","user":"b15xxxxxx","pass":"密碼","chat_id":"123","lookback_hours":48,"max_mails":25,"email_model":"openai/gpt-6-luna","redact_patterns":["王小華","TA 小明"]}]</code>
+    <code>[{"name":"ntu","protocol":"pop3","host":"msa.ntu.edu.tw","port":995,"mode":"tls","user":"b15xxxxxx","pass":"密碼","lookback_hours":48,"max_mails":25,"email_model":"openai/gpt-6-luna","redact_patterns":["王小華","TA 小明"]}]</code>（<code>chat_id</code> 可選，單人自動推導）
  • 支援的 protocol 目前有 <code>pop3</code>；<code>imap</code> 之後可直接加在 EMAIL_ACCOUNTS 而不必改程式喵
  • AI 模型分工：<b>郵件摘要</b>用 <code>openai/gpt-6-luna</code>（可用 <code>EMAIL_AI_MODEL</code> secret 或 EMAIL_ACCOUNTS 的 <code>email_model</code> 覆寫）；一般<strong>一句話任務辨識</strong>維持輕量 <code>openai-fast</code> 省成本
  • 若要加強去識別化（人名、組織等），可設定 <code>REDACT_PATTERNS</code> secret，一行一個關鍵字或 <code>re:正規式</code>；送 AI 前與 AI 輸出後都會自動遮蔽

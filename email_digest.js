@@ -270,7 +270,7 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
     return { key: mb.key, name: mb.name, skipped: true, count: 0 };
   }
   if (!target) {
-    log(`[${mb.key}] 沒有 chat 目標（設 DIGEST_CHAT_ID 或信箱 chat_id），跳過`);
+    log(`[${mb.key}] 沒有 chat 目標（DB 沒有任何 user_id，也沒設 DIGEST_CHAT_ID），跳過`);
     return { key: mb.key, name: mb.name, skipped: true, count: 0 };
   }
 
@@ -370,7 +370,21 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
 // ============== 排程 / 手動入口 ==============
 
 export async function runEmailDigest(api, env, { force = false, log = () => {}, chatId = null } = {}) {
-  const mbs = getMailboxes(env, chatId);
+  // 單人使用情境：cron 觸發時沒有訊息來源，自動從 DB 推導 chat 目標
+  // （私人聊天中 chat_id == user_id，提醒/每日報告也是這樣推導的）
+  let effectiveChatId = chatId;
+  if (!effectiveChatId) {
+    try {
+      const { results } = await env.DB.prepare("SELECT DISTINCT user_id FROM todos LIMIT 1").all();
+      if (results && results.length) {
+        effectiveChatId = String(results[0].user_id);
+        log(`chat 目標自動推導：${effectiveChatId}`);
+      }
+    } catch (e) {
+      log(`chat 目標自動推導失敗：${e.message}`);
+    }
+  }
+  const mbs = getMailboxes(env, effectiveChatId);
   if (!mbs.length) return { results: [], note: "no mailboxes configured" };
   const results = [];
   for (const mb of mbs) {
