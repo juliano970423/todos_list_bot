@@ -216,32 +216,53 @@ export async function buildDigestItems(env, mails, aiDigest, redactor, nowTs) {
 // ============== 訊息渲染 ==============
 
 export function renderDigestMessage(mailboxName, todayStr, items) {
-  const groups = new Map();
-  for (const it of items) {
-    if (!groups.has(it.category)) groups.set(it.category, []);
-    groups.get(it.category).push(it);
-  }
+  // 有期限的（已加入待辦或僅摘要但有期限）排前面，依時間先後；無期限的放後面
+  const deadlineTs = (it) => (it.valid && it.remindAt > 0 ? it.remindAt : (it.deadlineTs > 0 ? it.deadlineTs : 0));
+  const sorted = items.map((it, idx) => ({ it, idx })).sort((a, b) => {
+    const da = deadlineTs(a.it), db = deadlineTs(b.it);
+    if (da > 0 && db > 0) return da - db || a.idx - b.idx;
+    if (da > 0) return -1;
+    if (db > 0) return 1;
+    return a.idx - b.idx;
+  }).map((x) => x.it);
+  const catTotal = new Map();
+  for (const it of sorted) catTotal.set(it.category, (catTotal.get(it.category) || 0) + 1);
+  const catSeen = new Set();
   let msg = `📬 <b>${esc(mailboxName)} ・ Email 摘要</b>\n🗓 ${esc(todayStr)} ・ ${items.length} 封\n`;
   let n = 0;
-  for (const [cat, group] of groups) {
-    const emoji = CATEGORY_EMOJI[cat] || "📌";
-    msg += `\n${emoji} <b>${esc(cat)} (${group.length})</b>\n`;
-    for (const it of group) {
-      n++;
+  for (const it of sorted) {
+    if (!catSeen.has(it.category)) {
+      catSeen.add(it.category);
+      const emoji = CATEGORY_EMOJI[it.category] || "📌";
+      msg += `\n${emoji} <b>${esc(it.category)} (${catTotal.get(it.category)})</b>\n`;
+    }
+    n++;
       msg += `${n}. <b>${esc(it.subject) || "(無主旨)"}</b>\n`;
       msg += `   ${esc(it.summary)}\n`;
       msg += `   ✉ ${esc(it.from || "")}${it.sent ? " · " + esc(it.sent) : ""}\n`;
-      if (it.valid && it.remindAt > 0) {
+      if (it.valid && it.remindAt > 0 && it.added !== false) {
         const timeStr = it.allDay ? `${formatDateSmart(it.remindAt)} (全天)` : formatDateTimeSmart(it.remindAt);
         msg += `   ✅ 已自動加入待辦：<b>${esc(it.task)}</b>\n`;
+        msg += `      到期：${esc(timeStr)}\n`;
+      } else if (it.valid && it.remindAt > 0) {
+        const timeStr = it.allDay ? `${formatDateSmart(it.remindAt)} (全天)` : formatDateTimeSmart(it.remindAt);
+        msg += `   ⚠️ 待辦加入失敗：<b>${esc(it.task)}</b>\n`;
         msg += `      到期：${esc(timeStr)}\n`;
       } else if (it.deadlineText) {
         const tag = it.shouldTodo === false ? "報名/參考型，僅摘要" : "無法轉待辦，僅摘要";
         msg += `   ⏰ 期限：<b>${esc(it.deadlineText)}</b>（${tag}）\n`;
       }
-    }
   }
-  return msg.slice(0, MAX_MSG_CHARS);
+  // 安全截斷：只能整行切，避免把 <b>...</b> 切一半導致 Telegram 400
+  if (msg.length > MAX_MSG_CHARS) {
+    let out = "", cut = false;
+    for (const line of msg.split("\n")) {
+      if (out.length + line.length + 1 > MAX_MSG_CHARS) { cut = true; break; }
+      out += (out ? "\n" : "") + line;
+    }
+    msg = out + (cut ? "\n…（以下略）" : "");
+  }
+  return msg;
 }
 
 // ============== 單一信箱流程 ==============
@@ -320,45 +341,47 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
 
   const items = aiJson ? await buildDigestItems(env, res.mails, aiJson, redactor, nowTs) : [];
 
-  //組訊息
-  let msg;
-  if (items.length) {
-    msg = renderDigestMessage(mb.name, today, items);
-  } else {
-    msg = `📬 <b>${esc(mb.name)} ・ Email 摘要</b>\n🗓 ${esc(todayStr)} ・ ${res.mails.length} 封 (AI 摘要無回覆，附原始清單)\n\n` +
-      res.mails.map((m, i) => `${i + 1}. ${esc(m.subject) || "(無主旨)"}\n   ✉ ${esc(m.from)}`).join("\n");
-  }
-
-  // 自動把待辦型項目加入清單（使用者不用按按鈕）
+  // 先把待辦寫進 DB，再渲染訊息 — 這樣訊息裡的 ✅ 才反映真實結果
   const validItems = items.filter((i) => i.valid);
   let addErrMsg = null;
   if (validItems.length) {
     try {
       await addTodosBatch(env, String(target), validItems.map((v) => ({ task: v.task, remindAt: v.remindAt, cronRule: null, allDay: v.allDay })));
-      msg += `\n\n✅ <b>已自動加入 ${validItems.length} 筆待辦喵～</b>（之後可用 /list 檢視，🗑️ 認定誤植可刪除）`;
+      validItems.forEach((v) => { v.added = true; });
     } catch (e) {
       console.error(`[email_digest][${mb.key}] 自動加入待辦失敗:`, e);
       addErrMsg = String(e?.message || e);
-      msg += `\n\n⚠️ 自動加入待辦失敗喵：<code>${esc(addErrMsg).slice(0, 120)}</code>`;
+      validItems.forEach((v) => { v.added = false; });
     }
   }
 
+  //組訊息
+  let msg;
+  if (items.length) {
+    msg = renderDigestMessage(mb.name, today, items);
+    if (validItems.length && addErrMsg === null) {
+      msg += `\n\n✅ <b>已自動加入 ${validItems.length} 筆待辦喵～</b>（之後可用 /list 檢視，🗑️ 認定誤植可刪除）`;
+    } else if (addErrMsg !== null) {
+      msg += `\n\n⚠️ 自動加入待辦失敗喵：<code>${esc(addErrMsg).slice(0, 120)}</code>`;
+    }
+  } else {
+    msg = `📬 <b>${esc(mb.name)} ・ Email 摘要</b>\n🗓 ${esc(today)} ・ ${res.mails.length} 封 (AI 摘要無回覆，附原始清單)\n\n` +
+      res.mails.map((m, i) => `${i + 1}. ${esc(m.subject) || "(無主旨)"}\n   ✉ ${esc(m.from)}`).join("\n");
+  }
+
   if (target && api) {
+    // HTML 解析失敗的保險：改送純文字（剝掉標籤），確保使用者至少收得到內容
     try {
-      // 訊息超過 4096 會被 Telegram 拒收（MAIL_MAX_MAILS 開大時可能發生），切多段送
-      if (msg.length <= 4096) {
-        await api.sendMessage(target, msg, { parse_mode: "HTML" });
-      } else {
-        let rest = msg;
-        while (rest.length > 0) {
-          const part = rest.slice(0, 4090);
-          rest = rest.slice(4090);
-          await api.sendMessage(target, part, rest ? {} : { parse_mode: "HTML" });
-        }
-      }
+      await api.sendMessage(target, msg, { parse_mode: "HTML" });
     } catch (e) {
-      console.error(`[email_digest][${mb.key}] 送出摘要失敗:`, e);
-      return { key: mb.key, name: mb.name, skipped: false, ok: false, stage: "send", error: String(e?.message || e) };
+      console.error(`[email_digest][${mb.key}] HTML 送出失敗，改純文字重送:`, e.message);
+      try {
+        const plain = msg.replace(/<[^>]+>/g, "");
+        await api.sendMessage(target, plain);
+      } catch (e2) {
+        console.error(`[email_digest][${mb.key}] 送出摘要失敗:`, e2);
+        return { key: mb.key, name: mb.name, skipped: false, ok: false, stage: "send", error: String(e2?.message || e2) };
+      }
     }
   }
 
@@ -399,22 +422,46 @@ export async function runEmailDigest(api, env, { force = false, log = () => {}, 
 }
 
 // /email_now 手動觸發（本機 / bot 對話框中的 ctx 也可以）
+// 單飛機制：同一個 chat 同時只跑一輪，避免並發造成重複抓信/重複加入待辦
+const emailNowRunning = new Set();
+
 export async function handleEmailNow(ctx, env) {
-  const wait = await ctx.reply("📬 喵～正在檢查信箱並做 AI 摘要…（約 10-30 秒）");
-  const { results } = await runEmailDigest(ctx.api, env, { force: true, log: (s) => console.log("[email_now]", s), chatId: String(ctx.chat.id) });
-  const parts = [];
-  for (const r of results) {
-    if (r.skipped) parts.push(`⏭ <b>${esc(r.name)}</b>：今日摘要已送過，跳過`);
-    else if (r.ok) parts.push(`✅ <b>${esc(r.name)}</b>：${r.count} 封新信${r.autoAdded ? `，已自動加入 ${r.autoAdded} 筆待辦` : ""}`);
-    else parts.push(`❌ <b>${esc(r.name)}</b>：${esc(r.stage || "")} — <code>${esc(String(r.error || "")).slice(0, 90)}</code>`);
+  const runKey = String(ctx.chat.id);
+  if (emailNowRunning.has(runKey)) {
+    return ctx.reply("⏳ 上一輪摘要還在跑喵（約 10-30 秒），先等它完成再按喔");
   }
-  let summary;
-  if (!results.length) summary = `📭 尚未設定任何 Email 信箱喵。\n\n<b>設定方式（二選一）：</b>\n1. 簡單版 secrets：<code>POP3_HOST</code> / <code>POP3_PORT</code> / <code>POP3_TLS</code> / <code>POP3_USER</code> / <code>POP3_PASS</code>\n2. 進階版：<code>EMAIL_ACCOUNTS</code> secret 放 JSON，可設定多個信箱`;
-  else summary = `📬 <b>Email 檢查完成喵～</b>\n${parts.join("\n")}`;
+  emailNowRunning.add(runKey);
+  const wait = await ctx.reply("📬 喵～正在檢查信箱並做 AI 摘要…（約 10-30 秒）");
+  // 佔位訊息一定收回：HTML 編輯 → 純文字編輯 → 刪除後改發新訊
+  const finish = async (text) => {
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, wait.message_id, text, { parse_mode: "HTML" });
+      return;
+    } catch {}
+    const plain = text.replace(/<[^>]+>/g, "");
+    try {
+      await ctx.api.editMessageText(ctx.chat.id, wait.message_id, plain);
+      return;
+    } catch {}
+    try { await ctx.api.deleteMessage(ctx.chat.id, wait.message_id); } catch {}
+    try { await ctx.reply(plain); } catch {}
+  };
   try {
-    await ctx.api.editMessageText(ctx.chat.id, wait.message_id, summary, { parse_mode: "HTML" });
-  } catch {
-    await ctx.reply(summary, { parse_mode: "HTML" });
+    const { results } = await runEmailDigest(ctx.api, env, { force: true, log: (s) => console.log("[email_now]", s), chatId: String(ctx.chat.id) });
+    const parts = [];
+    for (const r of results) {
+      if (r.skipped) parts.push(`⏭ <b>${esc(r.name)}</b>：今日摘要已送過，跳過`);
+      else if (r.ok) parts.push(`✅ <b>${esc(r.name)}</b>：${r.count} 封新信${r.autoAdded ? `，已自動加入 ${r.autoAdded} 筆待辦` : ""}`);
+      else parts.push(`❌ <b>${esc(r.name)}</b>：${esc(r.stage || "")} — <code>${esc(String(r.error || "")).slice(0, 90)}</code>`);
+    }
+    let summary;
+    if (!results.length) summary = `📭 尚未設定任何 Email 信箱喵。\n\n<b>設定方式（二選一）：</b>\n1. 簡單版 secrets：<code>POP3_HOST</code> / <code>POP3_PORT</code> / <code>POP3_TLS</code> / <code>POP3_USER</code> / <code>POP3_PASS</code>\n2. 進階版：<code>EMAIL_ACCOUNTS</code> secret 放 JSON，可設定多個信箱`;
+    else summary = `📬 <b>Email 檢查完成喵～</b>\n${parts.join("\n")}`;
+    await finish(summary);
+  } catch (e) {
+    await finish(`❌ 摘要流程異常喵：<code>${esc(String(e?.message || e)).slice(0, 160)}</code>`);
+  } finally {
+    emailNowRunning.delete(runKey);
   }
 }
 
