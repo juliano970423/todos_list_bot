@@ -328,7 +328,7 @@ function encodeBatchPayload(items) {
 
 function decodeBatchPayload(str) {
   if (!str) throw new Error("缺少批次資料");
-  const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
   while (b64.length % 4) b64 += '=';
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
