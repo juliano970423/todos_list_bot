@@ -3,13 +3,12 @@
 // 1. 信箱連線參數 100% 來自 EMAIL_ACCOUNTS (JSON secret) 或扁平設定 (POP3_*)，程式不綁服務商
 // 2. 目前支援 POP3；IMAP 保留插槽（於 POP3_EMAIL fetch 分派處加一個 case 即可）
 // 3. 送 AI 前內容先去識別化，生成後再複掃一次
-// 4. 按鈕確認是 stateless：EMAIL_BATCH_DATA：<base64> 藏在訊息文字；callback emsvall/emsvone/emcancel
-import { InlineKeyboard } from "grammy";
+// 4. 發現「待辦型」任務自動加入天天待辦清單（報名型只摘要）
+// 5. 郵件摘要呼叫強模型 (預設 openai/gpt-6-luna)；一般一句話辨識維持輕量 openai-fast
 import * as chrono from "chrono-node";
 import { fetchMail, buildRedactor } from "./pop3.js";
-import { encodeBatchPayload } from "./task.js";
-import { getEmailState, saveEmailState } from "./db.js";
-import { getNowTaipei, localDateToUtcTs } from "./time.js";
+import { addTodosBatch, getEmailState, saveEmailState } from "./db.js";
+import { getNowTaipei, localDateToUtcTs, formatDateTimeSmart, formatDateSmart } from "./time.js";
 import { callAI } from "./ai.js";
 import { parseAITimeExpression } from "./router.js";
 
@@ -58,6 +57,7 @@ export function getMailboxes(env, fallbackChatId = null) {
             lookbackHours: a.lookback_hours != null ? parseFloat(a.lookback_hours) : LOOKBACK_HOURS_FIRST,
             maxMails: a.max_mails != null ? parseInt(a.max_mails) : MAX_DIGEST_MAILS,
             redact: Array.isArray(a.redact_patterns) ? a.redact_patterns.map(String) : [],
+            emailModel: String(a.email_model || env.EMAIL_AI_MODEL || "openai/gpt-6-luna"),
             enabled: a.enabled !== false,
           });
         }
@@ -81,6 +81,7 @@ export function getMailboxes(env, fallbackChatId = null) {
       lookbackHours: parseFloat(env.POP3_LOOKBACK_HOURS || LOOKBACK_HOURS_FIRST),
       maxMails: parseInt(env.EMAIL_MAX_MAILS || MAX_DIGEST_MAILS),
       redact: [],
+      emailModel: env.EMAIL_AI_MODEL || "openai/gpt-6-luna",
       enabled: true,
     });
   }
@@ -102,30 +103,34 @@ function buildPrompt(mails, nowStr) {
 # SYSTEM ROLE: Email classification & digest assistant (Traditional Chinese output)
 # CURRENT TIME (Taipei, UTC+8): ${nowStr}
 
-# OBJECTIVE: 為每一封信產生分類/摘要/期限/可轉待辦動作。輸出要讓學生一分鐘看完就知道今天要不要做什麼。
+# OBJECTIVE: 為每一封信產生分類/摘要/期限/是否可直接轉為待辦。輸出讓學生一分鐘看完就知道今天要做什麼。
 
 # 信件內容 mailList (JSON):
 ${JSON.stringify(items, null, 1)}
 
-# 針對每封信輸出 4 欄 (mailList 的 id 要原樣保留):
+# 針對每封信輸出 5 欄 (mailList 的 id 要原樣保留):
 1. **category**: 只能選一個分類："課程", "作業/考試", "行政/系統", "社團/活動", "財務/繳費", "其他"
-2. **summary**: 繁體中文 1 句，≤ 40 字。講出 最大關鍵資訊（課名/日期/繳費金額/地點等）。不要發明信件中沒有的資訊。
-3. **deadline**: 只有信內「明確提到」米到期日 (due date/deadline/繳費截止) 才填，用英文可解析格式:
-   - 明日類:"tomorrow", "in 2 days","next Monday"
+2. **summary**: 繁體中文 1 句，≤ 40 字。講出最關鍵的資訊（課名/日期/繳費金額/地點等）。不要發明信件中沒有的資訊。
+3. **should_todo**: 布林值 (true/false)。兩類信件要區分:
+   - true = 「待辦型」：收件人「不用另外報名/不出席」、只需要在某時間前「主動完成某動作」的信（例：繳交作業/報告、繳註冊費學費、回填表單/文件、領取文件辦理、服裝儀容檢查、書面通知要修正）。
+   - false = 「報名型/參考型」：要「先報名才生效」的活動講座營隊（最後去不去由自己決定的）、純宣導通知、純參考公告。
+   判斷不確定 → false（寧可只摘要不加入待辦）。
+4. **deadline**: 只有「要主動完成的期限/屆日」才填（作業截止日、繳費截止日、報名截止日都可以填，供摘要顯示），用英文可解析格式:
+   - 相對:"tomorrow", "in 2 days", "next Monday"
    - 星期: "Friday" 或 "Friday 23:59"
-   - 明確日期:"January 15" 或 "2027-01-15" 或 "2027-01-15 23:59"
+   - 明確日期: "January 15" / "2027-01-15" / "2027-01-15 23:59"
    其餘一律 null（寧可漏掉, 不可捏造）。
-4. **task_hint**: 信件有明確要主動完成? 的動作才寫（繁中、≤25字、動賓結構、不含時間詞，例："繳交資演習題第1回"）。無行動 → null。
+5. **task_hint**: 只在 should_todo=true 且能一句話明確敘述時寫（繁中、≤25字、動賓結構、不含時間詞，例："繳交資演習題第1回"、"繳納註冊費"）。報名型/無明確動作 → null。
 
 # 規則
-- 全部繁體中文輸出（deadline/taskHint 欄格式保留英文）。
-- 一封信一條，不併、不拆、不漏靠；id 與 mailList 對不上照樣輸出 id 原樣。
-- snippet 通常是主旨+前幾行，很多是 html 純文字化後的碎訊息，摘要取核心資訊即可。
+- 全部繁體中文輸出（deadline/格式欄保留英文）。
+- 一封信一條；id 與 mailList 對不上時仍然保留原樣 id。
+- snippet 通常是主旨+前幾行的純文字化碎訊息，從中抓核心資訊即可。
 
 # OUTPUT FORMAT (JSON Only):
 {
   "digest": [
-    {"id":"001","category":"作業/考試","summary":"...","deadline":"Friday 23:59" or null,"task_hint":"..." or null}
+    {"id":"001","category":"作業/考試","summary":"...","should_todo":true,"deadline":"Friday 23:59" or null,"task_hint":"..." or null}
   ]
 }`;
 }
@@ -149,7 +154,7 @@ export function parseDeadlineText(text, refClockLocal) {
 
 // ============== 摘要後 items ==============
 
-async function buildDigestItems(env, mails, aiDigest, redactor, nowTs) {
+export async function buildDigestItems(env, mails, aiDigest, redactor, nowTs) {
   const refClock = getNowTaipei();
   let existing = [];
   try {
@@ -169,9 +174,11 @@ async function buildDigestItems(env, mails, aiDigest, redactor, nowTs) {
     if (!mail) continue;
     if (!row.category && !row.summary && !row.deadline && !row.task_hint) continue;
 
-    // AI 輸出的內容再過一次去識別化（被 AI 重寫進來的文字）
+    // AI 輸出的內容再過一次去識別化（AI 重寫進來的文字）
     const summary = redactor(String(row.summary || "")).slice(0, 120);
     const hint = row.task_hint ? redactor(String(row.task_hint)).slice(0, 60) : "";
+    // 報名型/參考型 (should_todo=false) 一律只摘要，不自動加待辦
+    const shouldTodo = row.should_todo === undefined ? true : !!row.should_todo;
     const dl = row.deadline ? parseDeadlineText(String(row.deadline), refClock) : null;
 
     const item = {
@@ -182,18 +189,24 @@ async function buildDigestItems(env, mails, aiDigest, redactor, nowTs) {
       from: mail.from || "",
       sent: mail.sent || "",
       deadlineText: row.deadline ? String(row.deadline) : null,
+      shouldTodo,
       task: null,
       remindAt: -1,
       cronRule: null,
       allDay: 0,
       valid: false,
     };
-    if (dl && dl.ts > nowTs - 3 * 24 * 3600) {
-      item.task = (hint || summary.slice(0, 80)).trim();
+    // 自動加入條件：待辦型 + 有明確期限 + 有明確行動句 + 未來合理時間 + 不與既有重複
+    if (dl && dl.ts > nowTs - 3600 && shouldTodo && hint) {
+      item.task = hint.trim();
       item.remindAt = dl.ts;
       item.allDay = dl.allDay;
       const dup = existing.some((t) => t.task === item.task && Number(t.remind_at) === item.remindAt);
       if (item.task && !dup) item.valid = true;
+    } else if (dl) {
+      // 報名型/參考型但有期限 → 保留期限顯示做摘要用途
+      item.deadlineTs = dl.ts;
+      item.deadlineAllDay = dl.allDay;
     }
     items.push(item);
   }
@@ -218,7 +231,14 @@ export function renderDigestMessage(mailboxName, todayStr, items) {
       msg += `${n}. <b>${esc(it.subject) || "(無主旨)"}</b>\n`;
       msg += `   ${esc(it.summary)}\n`;
       msg += `   ✉ ${esc(it.from || "")}${it.sent ? " · " + esc(it.sent) : ""}\n`;
-      if (it.deadlineText) msg += `   ⏰ 期限: <b>${esc(it.deadlineText)}</b>${it.valid ? " (可轉待辦)" : it.task ? " (與既有待辦重複)" : ""}\n`;
+      if (it.valid && it.remindAt > 0) {
+        const timeStr = it.allDay ? `${formatDateSmart(it.remindAt)} (全天)` : formatDateTimeSmart(it.remindAt);
+        msg += `   ✅ 已自動加入待辦：<b>${esc(it.task)}</b>\n`;
+        msg += `      到期：${esc(timeStr)}\n`;
+      } else if (it.deadlineText) {
+        const tag = it.shouldTodo === false ? "報名/參考型，僅摘要" : "無法轉待辦，僅摘要";
+        msg += `   ⏰ 期限：<b>${esc(it.deadlineText)}</b>（${tag}）\n`;
+      }
     }
   }
   return msg.slice(0, MAX_MSG_CHARS);
@@ -288,7 +308,7 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
 
   let aiJson = null;
   try {
-    const ai = await callAI(env, buildPrompt(aiMails, nowStr));
+    const ai = await callAI(env, buildPrompt(aiMails, nowStr), { model: mb.emailModel });
     aiJson = ai.json && Array.isArray(ai.json.digest) ? ai.json.digest : null;
   } catch (e) {
     console.error(`[email_digest][${mb.key}] AI 失敗:`, e.message);
@@ -300,7 +320,7 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
 
   const items = aiJson ? await buildDigestItems(env, res.mails, aiJson, redactor, nowTs) : [];
 
-  // 組訊息
+  //組訊息
   let msg;
   if (items.length) {
     msg = renderDigestMessage(mb.name, today, items);
@@ -309,28 +329,32 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
       res.mails.map((m, i) => `${i + 1}. ${esc(m.subject) || "(無主旨)"}\n   ✉ ${esc(m.from)}`).join("\n");
   }
 
+  // 自動把待辦型項目加入清單（使用者不用按按鈕）
   const validItems = items.filter((i) => i.valid);
+  let addErrMsg = null;
+  if (validItems.length) {
+    try {
+      await addTodosBatch(env, String(target), validItems.map((v) => ({ task: v.task, remindAt: v.remindAt, cronRule: null, allDay: v.allDay })));
+      msg += `\n\n✅ <b>已自動加入 ${validItems.length} 筆待辦喵～</b>（之後可用 /list 檢視，🗑️ 認定誤植可刪除）`;
+    } catch (e) {
+      console.error(`[email_digest][${mb.key}] 自動加入待辦失敗:`, e);
+      addErrMsg = String(e?.message || e);
+      msg += `\n\n⚠️ 自動加入待辦失敗喵：<code>${esc(addErrMsg).slice(0, 120)}</code>`;
+    }
+  }
+
   if (target && api) {
-    if (validItems.length) {
-      const payload = encodeBatchPayload(validItems.map((v) => ({ task: v.task, remindAt: v.remindAt, cronRule: null, allDay: v.allDay })));
-      let body = msg;
-      // 加上 payload 後不超過 Telegram 4096 限制
-      const tail = `\n\nEMAIL_BATCH_DATA:${payload}`;
-      if (body.length + tail.length > MAX_MSG_CHARS) body = body.slice(0, MAX_MSG_CHARS - tail.length) + "…";
-      const kb = new InlineKeyboard();
-      kb.text(`✅ 全部轉待辦 (${validItems.length})`, "emsvall").text("❌ 不用轉", "emcancel").row();
-      if (validItems.length > 1 && validItems.length <= 5) {
-        validItems.forEach((_, i) => kb.text(`存#${i + 1}`, `emsvone|${i}`));
-      }
-      await api.sendMessage(target, body + tail, { parse_mode: "HTML", reply_markup: kb });
-    } else {
+    try {
       await api.sendMessage(target, msg, { parse_mode: "HTML" });
+    } catch (e) {
+      console.error(`[email_digest][${mb.key}] 送出摘要失敗:`, e);
+      return { key: mb.key, name: mb.name, skipped: false, ok: false, stage: "send", error: String(e?.message || e) };
     }
   }
 
   const newUids = res.mails.map((m) => m.uid);
   await saveEmailState(env, mb.key, [...state.processed, ...newUids], today);
-  return { key: mb.key, name: mb.name, skipped: false, ok: true, count: res.mails.length, digestItems: items.length, saveable: validItems.length };
+  return { key: mb.key, name: mb.name, skipped: false, ok: true, count: res.mails.length, digestItems: items.length, autoAdded: validItems.length, addErrMsg };
 }
 
 // ============== 排程 / 手動入口 ==============
@@ -357,7 +381,7 @@ export async function handleEmailNow(ctx, env) {
   const parts = [];
   for (const r of results) {
     if (r.skipped) parts.push(`⏭ <b>${esc(r.name)}</b>：今日摘要已送過，跳過`);
-    else if (r.ok) parts.push(`✅ <b>${esc(r.name)}</b>：${r.count} 封新信${r.saveable ? `，可轉待辦 ${r.saveable} 筆` : ""}`);
+    else if (r.ok) parts.push(`✅ <b>${esc(r.name)}</b>：${r.count} 封新信${r.autoAdded ? `，已自動加入 ${r.autoAdded} 筆待辦` : ""}`);
     else parts.push(`❌ <b>${esc(r.name)}</b>：${esc(r.stage || "")} — <code>${esc(String(r.error || "")).slice(0, 90)}</code>`);
   }
   let summary;
@@ -382,5 +406,5 @@ export async function handleEmailStatus(ctx, env) {
     lines.push(`📪 <b>${esc(mb.name)}</b> (key 先別管)\n   ⚙️ ${esc(mb.protocol)}://${esc(maskUser(mb.user))}@${esc(mb.host)}:${mb.port} (${esc(mb.mode)})\n   🕐 上次摘要：${esc(st.lastDigestDate || "還沒跑過")}\n   📂 已追蹤 UID：${st.processed.length}`);
   }
   const redNote = env.REDACT_PATTERNS ? `有設定` : "使用內建預設";
-  return ctx.reply(`📬 <b>Email 摘要狀態喵～</b>\n\n${lines.join("\n")}\n\n🗄 設定來源：${env.EMAIL_ACCOUNTS ? "<code>EMAIL_ACCOUNTS</code> (JSON)" : "扁平設定 (POP3_*)"}\n🈸 去識別化：${redNote}`, { parse_mode: "HTML" });
+  return ctx.reply(`📬 <b>Email 摘要狀態喵～</b>\n\n${lines.join("\n")}\n\n🗄 設定來源：${env.EMAIL_ACCOUNTS ? "<code>EMAIL_ACCOUNTS</code> (JSON)" : "扁平設定 (POP3_*)"}\n🤖 摘要模型：${esc(mbs[0].emailModel)}\n🈸 去識別化：${redNote}`, { parse_mode: "HTML" });
 }

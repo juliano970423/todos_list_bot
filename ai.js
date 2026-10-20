@@ -148,7 +148,9 @@ Analyze the USER INPUT and extract the time expression and a human-readable labe
 
 
 // --- 8. AI API 調用 (強化版：回傳 raw content) ---
-async function callAI(env, prompt) {
+// opts.model: 覆寫模型（預設輕量 openai-fast 供一般單句任務辨識；email 摘要用強模型）
+async function callAI(env, prompt, opts = {}) {
+  const model = opts.model || "openai-fast";
   let rawContent = "";
   try {
     const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
@@ -158,7 +160,7 @@ async function callAI(env, prompt) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: "openai-fast", // 或 "gpt-4o-mini"
+        model,
         messages: [{ role: "user", content: prompt }],
         jsonMode: true
       }),

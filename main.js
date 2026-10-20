@@ -47,8 +47,8 @@ export default {
 • 日期格式：1月1號、Jan 1st
 
  <b>信箱摘要喵（Email Digest）：</b>
- • <code>/email_now</code> - 立即抓新信並產生 AI 分類摘要，附「✅ 全部轉待辦」按鈕
- • <code>/email_status</code> - 查看信箱連線設定與上次摘要時間
+ • <code>/email_now</code> - 立即抓新信並產生 AI 分類摘要：發現「待辦型」(繳作業/繳費/回表單等) 會<b>自動加入待辦</b>；報名型活動只做摘要喵
+ • <code>/email_status</code> - 查看信箱連線設定、摘要模型與上次摘要時間
  • 每天早上 9 點 (台北時間) 自動推送一次摘要喵
  • 設定方式 1（最簡單）：在 Cloudflare 設定 secrets
    - <code>POP3_HOST</code> = msa.ntu.edu.tw
@@ -58,9 +58,10 @@ export default {
    - <code>POP3_PASS</code> = 你的計中密碼
    - <code>DIGEST_CHAT_ID</code> = 接收摘要的 chat id（通常是你的 Telegram user id）
  • 設定方式 2（進階、支持多信箱）：設定一個 <code>EMAIL_ACCOUNTS</code> secret 放 JSON 陣列，一格一個信箱：
-   <code>[{"name":"ntu","protocol":"pop3","host":"msa.ntu.edu.tw","port":995,"mode":"tls","user":"b15xxxxxx","pass":"密碼","chat_id":"123","lookback_hours":48,"max_mails":25,"redact_patterns":["王小華","TA 小明"]}]</code>
- • 支援的 protocol 目前有 <code>pop3</code>，<code>imap</code> 之後可直接加在 EMAIL_ACCOUNTS 而不必改程式喵
- • 若要加強去識別化（人名、組織等），可設定 <code>REDACT_PATTERNS</code> secret，一行一個關鍵字或 <code>re:正規式</code>；所有內容進 AI 前與 AI 輸出後都會自動遮蔽
+   <code>[{"name":"ntu","protocol":"pop3","host":"msa.ntu.edu.tw","port":995,"mode":"tls","user":"b15xxxxxx","pass":"密碼","chat_id":"123","lookback_hours":48,"max_mails":25,"email_model":"openai/gpt-6-luna","redact_patterns":["王小華","TA 小明"]}]</code>
+ • 支援的 protocol 目前有 <code>pop3</code>；<code>imap</code> 之後可直接加在 EMAIL_ACCOUNTS 而不必改程式喵
+ • AI 模型分工：<b>郵件摘要</b>用 <code>openai/gpt-6-luna</code>（可用 <code>EMAIL_AI_MODEL</code> secret 或 EMAIL_ACCOUNTS 的 <code>email_model</code> 覆寫）；一般<strong>一句話任務辨識</strong>維持輕量 <code>openai-fast</code> 省成本
+ • 若要加強去識別化（人名、組織等），可設定 <code>REDACT_PATTERNS</code> secret，一行一個關鍵字或 <code>re:正規式</code>；送 AI 前與 AI 輸出後都會自動遮蔽
 
 💡 喵～小提示：如果AI解析結果不正確，可以點擊「AI重新判斷喵」按鈕讓AI重新分析！`;
 
