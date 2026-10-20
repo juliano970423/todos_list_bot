@@ -52,13 +52,18 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
   const userId = ctx.from.id.toString();
   const results = await getTodos(env, userId, 0);
 
+  // start/end 必須在最前面宣告（例行分支的 mg 按鈕會用到，若放後面會 TDZ crash）
+  const todayRange = getTodayRangeTaipei();
+  const start = startTs ?? todayRange.start;
+  const end = endTs ?? todayRange.end;
+
   // 如果是例行性任務查詢，直接返回所有週期性任務
   if (label === "例行性任務清單") {
     const recurringTasks = results.filter(t => t.cron_rule && t.cron_rule !== 'none' && t.cron_rule !== null);
 
-    if (!recurringTasks.length) return ctx.reply(`📋 <b>${label}</b>\n😿 喵～目前沒有例行性任務呢～`, { parse_mode: "HTML" });
+    if (!recurringTasks.length) return ctx.reply(`📋 <b>${escapeHtml(label)}</b>\n😿 喵～目前沒有例行性任務呢～`, { parse_mode: "HTML" });
 
-    let msg = `📋 <b>${label}</b>\n`;
+    let msg = `📋 <b>${escapeHtml(label)}</b>\n`;
     recurringTasks.forEach((t, i) => {
       let timeDisplay = "";
 
@@ -72,88 +77,22 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
         timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
       }
 
-      msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
+      msg += `${i+1}. [${timeDisplay}] ${escapeHtml(t.task)}\n`;
     });
 
     return await ctx.reply(msg, {
       parse_mode: "HTML",
-      reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
+      reply_markup: new InlineKeyboard().text("🗑️ 管理喵", "mg|0|0")
     });
   }
 
-  const todayRange = getTodayRangeTaipei();
-  const start = startTs ?? todayRange.start;
-  const end = endTs ?? todayRange.end;
-
    const filtered = results.filter(t => {
     if (t.cron_rule) {
-      // 週期任務：檢查查詢時間範圍內是否有符合規則的執行時間
-      if (t.cron_rule.startsWith('weekly:')) {
-        const days = t.cron_rule.split(':')[1].split(',').map(Number);
-        
-        // start/end 是台北时间的 UTC 时间戳（秒）
-        // 加回 8h 得到台北时间对应的 Date 对象（内部值 = UTC = 台北+8h）
-        // getUTCDay() 返回台北时间的星期几
-        const taipeiOffsetMs = 8 * 60 * 60 * 1000;
-        const startDate = new Date(start * 1000 + taipeiOffsetMs);
-        const endDate = new Date(end * 1000 + taipeiOffsetMs);
-        
-        console.log(`[renderList] ===== 開始檢查週期任務 =====`);
-        console.log(`[renderList] 任務: ${t.task}`);
-        console.log(`[renderList] cron_rule: ${t.cron_rule}`);
-        console.log(`[renderList] 解析出的星期幾: ${days}`);
-        console.log(`[renderList] 查詢範圍(UTC): ${start} - ${end}`);
-        console.log(`[renderList] 查詢範圍(台北): ${startDate.toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} - ${endDate.toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})}`);
-        
-        let currentDate = new Date(startDate);
-        
-        while (currentDate <= endDate) {
-          const utcDay = currentDate.getUTCDay();
-          const dayOfWeekISO = utcDay === 0 ? 7 : utcDay;
-          
-          const isMatch = days.includes(dayOfWeekISO);
-          console.log(`[renderList] 檢查 ${currentDate.toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})}: 台北星期=${dayOfWeekISO}, 符合=${isMatch}`);
-          if (isMatch) {
-            console.log(`[renderList] ✓ 找到符合日期`);
-            console.log(`[renderList] ===== 結束檢查 =====`);
-            return true;
-          }
-          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
-        }
-        console.log(`[renderList] ✗ 未找到符合日期`);
-        console.log(`[renderList] ===== 結束檢查 =====`);
-        return false;
-      }
-      if (t.cron_rule === 'daily') {
-        return true;
-      }
-      if (t.cron_rule.startsWith('monthly:')) {
-        const dayOfMonth = parseInt(t.cron_rule.split(':')[1]);
-        const startDate = new Date(start * 1000);
-        const endDate = new Date(end * 1000);
-        let currentDate = new Date(startDate);
-        while (currentDate <= endDate) {
-          if (currentDate.getUTCDate() === dayOfMonth) return true;
-          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
-        }
-        return false;
-      }
-      if (t.cron_rule.startsWith('yearly:')) {
-        const [month, day] = t.cron_rule.split(':')[1].split('-').map(Number);
-        const startDate = new Date(start * 1000);
-        const endDate = new Date(end * 1000);
-        let currentDate = new Date(startDate);
-        while (currentDate <= endDate) {
-          if (currentDate.getUTCMonth() + 1 === month && currentDate.getUTCDate() === day) return true;
-          currentDate.setUTCDate(currentDate.getUTCDate() + 1);
-        }
-        return false;
-      }
-      return false;
+      return recurringMatchesRange(t.cron_rule, start, end);
     }
     return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
   });
-  if (!filtered.length) return ctx.reply(`😿 喵～${label} 沒有待辦事項呢～`);
+  if (!filtered.length) return ctx.reply(`😿 喵～${escapeHtml(label)} 沒有待辦事項呢～`);
 
   // 排序：先發生的在前面，無期限(-1)放最後
   filtered.sort((a, b) => {
@@ -162,7 +101,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     return a.remind_at - b.remind_at;
   });
 
-  let msg = `📋 <b>${label} 任務清單喵～</b>\n`;
+  let msg = `📋 <b>${escapeHtml(label)} 任務清單喵～</b>\n`;
   filtered.forEach((t, i) => {
     let timeDisplay = "";
 
@@ -184,14 +123,14 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
       timeDisplay = "無期限";
     }
 
-    msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
+    msg += `${i+1}. [${timeDisplay}] ${escapeHtml(t.task)}\n`;
   });
 
   // 如果有時間範圍信息（本地解析或 AI）
   if (aiResult && (aiResult.source || aiResult.aiExtracted)) {
     msg += `\n\n🔍 <b>查詢時間範圍：</b>\n`;
-    msg += `<code>標籤：${aiResult.label || label}\n`;
-    msg += `來源：${aiResult.source || 'N/A'}`;
+    msg += `<code>標籤：${escapeHtml(aiResult.label || label)}\n`;
+    msg += `來源：${escapeHtml(aiResult.source || 'N/A')}`;
     if (aiResult.start !== undefined) {
       msg += `\n開始：${new Date(aiResult.start * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} (${aiResult.start})`;
     }
@@ -199,13 +138,13 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
       msg += `\n結束：${new Date(aiResult.end * 1000).toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})} (${aiResult.end})`;
     }
     if (aiResult.originalQuery) {
-      msg += `\n查詢：${aiResult.originalQuery}`;
+      msg += `\n查詢：${escapeHtml(aiResult.originalQuery)}`;
     }
     if (aiResult.aiExtracted) {
-      msg += `\nAI 提取：${aiResult.aiExtracted}`;
+      msg += `\nAI 提取：${escapeHtml(aiResult.aiExtracted)}`;
     }
     if (aiResult.aiRaw) {
-      msg += `\nAI 原始回應：${aiResult.aiRaw.substring(0, 200)}...`;
+      msg += `\nAI 原始回應：${escapeHtml(aiResult.aiRaw.substring(0, 200))}...`;
     }
     msg += '</code>';
   }
@@ -234,21 +173,59 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
   if (imgBuffer) {
     try {
-      await ctx.replyWithDocument(toSvgDocument(imgBuffer), {
-        caption: msg,
-        parse_mode: "HTML",
-        reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
-      });
-      console.log(`[renderList] SVG 文件發送成功`);
+      // caption 上限 1024 字：放得下就附在圖片上，放不下就先送圖、再分批送文字
+      if (msg.length <= 1024) {
+        await ctx.replyWithDocument(toSvgDocument(imgBuffer), {
+          caption: msg,
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
+        });
+      } else {
+        await ctx.replyWithDocument(toSvgDocument(imgBuffer), {
+          reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
+        });
+        await sendChunked(ctx, msg, { parse_mode: "HTML" });
+      }
       return;
     } catch (e) {
       logSendError("renderList", "SVG 文件發送", e);
     }
   }
-  await ctx.reply(msg, {
+  await sendChunked(ctx, msg, {
     parse_mode: "HTML",
     reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
   });
+}
+
+// 文字訊息 >4096 會被 Telegram 拒收，切成多段送出
+async function sendChunked(ctx, msg, options = {}) {
+  const chunks = chunkText(msg, 4096);
+  for (let i = 0; i < chunks.length; i++) {
+    try {
+      await ctx.reply(chunks[i], i === chunks.length - 1 ? options : {});
+    } catch (e) {
+      const isParseErr = /parse entities|BAD entity|can't parse/i.test(String(e?.description || e?.message || ""));
+      if (isParseErr && options.parse_mode) {
+        // HTML 解析失敗的保底：用純文字重送該段
+        await ctx.reply(chunks[i]).catch(() => {});
+      } else {
+        throw e;
+      }
+    }
+  }
+}
+
+// bot.api 版的 HTML 發送（cron 場景沒有 ctx），HTML 解析失敗自動改純文字
+async function sendBotMessageHtml(api, chatId, text, options = {}) {
+  try {
+    return await api.sendMessage(chatId, text, { parse_mode: "HTML", ...options });
+  } catch (e) {
+    const desc = String(e?.description || e?.message || "");
+    if (/parse entities|BAD entity|can't parse/i.test(desc)) {
+      return api.sendMessage(chatId, text);
+    }
+    throw e;
+  }
 }
 
 // 輔助：格式化時間戳為 YYYY/M/D（帶年）
@@ -270,12 +247,12 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
   if (!results.length) {
     // 如果是清空操作後的查詢
     if (label === "最近" && startTs === null && endTs === null) {
-      return ctx.reply(`📚 ${label} 無完成紀錄喵～`, { parse_mode: "HTML" });
+      return ctx.reply(`📚 ${escapeHtml(label)} 無完成紀錄喵～`, { parse_mode: "HTML" });
     }
-    return ctx.reply(`📚 ${label} 無完成紀錄喵～`, { parse_mode: "HTML" });
+    return ctx.reply(`📚 ${escapeHtml(label)} 無完成紀錄喵～`, { parse_mode: "HTML" });
   }
 
-  let msg = `📚 <b>${label} 完成紀錄喵～</b>\n`;
+  let msg = `📚 <b>${escapeHtml(label)} 完成紀錄喵～</b>\n`;
   // 按提醒時間從近到遠排序（最近的在前）
   results.sort((a, b) => b.remind_at - a.remind_at);
   results = results.slice(0, 15); // 限制顯示 15 筆
@@ -286,7 +263,7 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
     } else {
       timeStr = formatDateTimeSmart(t.remind_at);
     }
-    msg += `${i+1}. [${timeStr}] ✅ ${t.task}\n`;
+    msg += `${i+1}. [${timeStr}] ✅ ${escapeHtml(t.task)}\n`;
   });
 
   // 產生圖片並發送
@@ -313,17 +290,21 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
 
   if (imgBuffer) {
     try {
-      await ctx.replyWithDocument(toSvgDocument(imgBuffer, "history.svg"), {
-        caption: msg,
-        parse_mode: "HTML",
-      });
-      console.log(`[renderHistory] SVG 文件發送成功`);
+      if (msg.length <= 1024) {
+        await ctx.replyWithDocument(toSvgDocument(imgBuffer, "history.svg"), {
+          caption: msg,
+          parse_mode: "HTML",
+        });
+      } else {
+        await ctx.replyWithDocument(toSvgDocument(imgBuffer, "history.svg"), {});
+        await sendChunked(ctx, msg, { parse_mode: "HTML" });
+      }
       return;
     } catch (e) {
       logSendError("renderHistory", "SVG 文件發送", e);
     }
   }
-  await ctx.reply(msg, { parse_mode: "HTML" });
+  await sendChunked(ctx, msg, { parse_mode: "HTML" });
 }
 
 // --- 批次 payload 編解碼 (stateless: 數據藏在訊息文本，callback 只帶短 key) ---
@@ -335,18 +316,24 @@ function encodeBatchPayload(items) {
     a: it.allDay ? 1 : 0
   }));
   const json = JSON.stringify(minimal);
-  // utf8-safe base64 (Workers 無 Buffer)
-  const utf8 = unescape(encodeURIComponent(json));
-  const b64 = btoa(utf8);
+  // utf8-safe base64（不用 escape/unescape，改用 TextEncoder；Workers/Node 都有）
+  const bytes = new TextEncoder().encode(json);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  const b64 = btoa(bin);
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function decodeBatchPayload(str) {
   if (!str) throw new Error("缺少批次資料");
-  let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
   while (b64.length % 4) b64 += '=';
   const bin = atob(b64);
-  const json = decodeURIComponent(escape(bin));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const json = new TextDecoder("utf-8").decode(bytes);
   const arr = JSON.parse(json);
   if (!Array.isArray(arr)) throw new Error("批次資料格式錯誤");
   return arr.map(o => ({
@@ -359,6 +346,81 @@ function decodeBatchPayload(str) {
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function unescapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
+// Telegram 文字訊息上限 4096（caption 1024）；把訊息切成多段送
+function chunkText(msg, limit = 4096) {
+  const text = String(msg ?? "");
+  if (text.length <= limit) return [text];
+  const chunks = [];
+  let rest = text;
+  while (rest.length > limit) {
+    let cut = rest.lastIndexOf("\n", limit);
+    if (cut < limit * 0.6) cut = limit;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^\n/, "");
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+// 週期任務是否會在 [startTs, endTs]（UTC 秒）範圍內執行
+// 一律用台北時鐘（+8h shifted）判斷星期/日期，避免 UTC 日期錯位
+function recurringMatchesRange(cronRule, startTs, endTs) {
+  if (!cronRule || cronRule === 'none' || cronRule === 'null') return false;
+  const TAIPEI_CLOCK_MS = TAIPEI_OFFSET * 60000;
+  const startAbs = Number(startTs) * 1000;
+  const endAbs = Number(endTs) * 1000;
+  if (!Number.isFinite(startAbs) || !Number.isFinite(endAbs) || endAbs < startAbs) return false;
+
+  if (cronRule === 'daily') return true;
+
+  if (cronRule.startsWith('weekly:')) {
+    let days = [];
+    try {
+      days = cronRule.split(':')[1].split(',').map(s => parseInt(s.trim())).filter(n => n >= 1 && n <= 7);
+    } catch { return false; }
+    if (!days.length) return false;
+    const cursor = new Date(startAbs + TAIPEI_CLOCK_MS);
+    while (cursor.getTime() - TAIPEI_CLOCK_MS <= endAbs) {
+      const iso = cursor.getUTCDay() === 0 ? 7 : cursor.getUTCDay();
+      if (days.includes(iso)) return true;
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return false;
+  }
+
+  if (cronRule.startsWith('monthly:')) {
+    const dayOfMonth = parseInt(cronRule.split(':')[1]);
+    if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) return false;
+    const cursor = new Date(startAbs + TAIPEI_CLOCK_MS);
+    while (cursor.getTime() - TAIPEI_CLOCK_MS <= endAbs) {
+      if (cursor.getUTCDate() === dayOfMonth) return true;
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return false;
+  }
+
+  if (cronRule.startsWith('yearly:')) {
+    let month = 0, day = 0;
+    try {
+      [month, day] = cronRule.split(':')[1].split('-').map(Number);
+    } catch { return false; }
+    if (month < 1 || month > 12) return false;
+    const cursor = new Date(startAbs + TAIPEI_CLOCK_MS);
+    while (cursor.getTime() - TAIPEI_CLOCK_MS <= endAbs) {
+      if (cursor.getUTCMonth() + 1 === month && cursor.getUTCDate() === day) return true;
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return false;
+  }
+
+  return false;
 }
 
 // --- 6. 確認與儲存 (UI) ---
@@ -388,20 +450,22 @@ async function sendConfirmation(ctx, state) {
     .text("🤖 AI 重新判斷喵", rejudgeCallback);
 
   let msg = `📌 <b>任務確認喵～</b>\n` +
-            `📝 內容：${state.task}\n` +
-            `⏰ 時間：${timeStr}\n` +
-            `🔄 規則：${ruleText}\n` +
-            `🔍 來源：${state.source}`;
+            `📝 內容：${escapeHtml(state.task)}\n` +
+            `⏰ 時間：${escapeHtml(timeStr)}\n` +
+            `🔄 規則：${escapeHtml(ruleText)}\n` +
+            `🔍 來源：${escapeHtml(state.source)}`;
 
   // 保存原始输入文本（用于 rejudge）
   if (state.originalText) {
-    msg += `\n💬 原始輸入：<code>${state.originalText}</code>`;
+    msg += `\n💬 原始輸入：<code>${escapeHtml(state.originalText).slice(0, 500)}</code>`;
   }
 
   // 如果有 debugRaw，顯示在訊息下方 (使用單行代碼格式，避免過長)
   if (state.debugRaw) {
-      msg += `\n\n🛠 <b>AI 原始數據：</b>\n<code>${state.debugRaw}</code>`;
+      msg += `\n\n🛠 <b>AI 原始數據：</b>\n<code>${escapeHtml(state.debugRaw).slice(0, 800)}</code>`;
   }
+
+  if (msg.length > 4096) msg = msg.slice(0, 4090) + "…";
 
   await ctx.reply(msg, { parse_mode: "HTML", reply_markup: kb });
 }
@@ -495,7 +559,7 @@ async function processScheduledReminders(bot, env) {
     }
 
     for (const todo of remindersToProcess) {
-      await bot.api.sendMessage(todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${todo.task}`, { parse_mode: "HTML" });
+      await sendBotMessageHtml(bot.api, todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${escapeHtml(todo.task)}`);
 
       if (!todo.cron_rule) {
         // 單次任務 -> 記錄歷史 + 標記完成
@@ -565,7 +629,7 @@ async function processScheduledReminders(bot, env) {
             } else {
               timeStr = '無期限';
             }
-            msg += `${i + 1}. [${timeStr}] ${t.task}\n`;
+            msg += `${i + 1}. [${timeStr}] ${escapeHtml(t.task)}\n`;
           });
 
           try {
@@ -593,23 +657,36 @@ async function processScheduledReminders(bot, env) {
               } catch (genErr) {
                 logSendError("每日报告", "SVG 產生", genErr);
               }
+              const reportChunks = chunkText(msg, 4096);
+              const sendReportText = async () => {
+                for (const part of reportChunks) {
+                  await sendBotMessageHtml(bot.api, userId, part);
+                }
+              };
               if (imgBuffer) {
                 try {
-                  await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {
-                    caption: msg,
-                    parse_mode: "HTML",
-                  });
-                  console.log(`[每日报告] SVG 文件發送成功, user=${userId}`);
+                  // caption 上限 1024，太長就只送圖，文字另外分批送
+                  if (msg.length <= 1024) {
+                    await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {
+                      caption: msg,
+                      parse_mode: "HTML",
+                    });
+                  } else {
+                    await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {});
+                    await sendReportText();
+                  }
                 } catch (sendErr) {
                   logSendError("每日报告", "SVG 文件發送", sendErr);
-                  await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
+                  await sendReportText();
                 }
               } else {
-                await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
+                await sendReportText();
               }
             } catch (imgErr) {
               logSendError("每日报告", "圖片流程", imgErr);
-              await bot.api.sendMessage(userId, msg, { parse_mode: "HTML" });
+              for (const part of chunkText(msg, 4096)) {
+                await sendBotMessageHtml(bot.api, userId, part);
+              }
             }
 
             console.log(`[每日报告] 成功发送报告给用户 ${userId}`);
@@ -647,10 +724,10 @@ async function renderRecurringTasks(ctx, env, tasks) {
       timeDisplay = `🔄 ${translateRule(t.cron_rule)}`;
     }
 
-    msg += `${i+1}. [${timeDisplay}] ${t.task}\n`;
+    msg += `${i+1}. [${timeDisplay}] ${escapeHtml(t.task)}\n`;
   });
 
-  return await ctx.reply(msg, {
+  return await sendChunked(ctx, msg, {
     parse_mode: "HTML",
     reply_markup: new InlineKeyboard().text("🗑️ 管理喵", "manage_mode")
   });
@@ -665,5 +742,11 @@ export {
   decodeBatchPayload,
   processScheduledReminders,
   translateRule,
-  renderRecurringTasks
+  renderRecurringTasks,
+  escapeHtml,
+  unescapeHtml,
+  chunkText,
+  sendChunked,
+  sendBotMessageHtml,
+  recurringMatchesRange
 };

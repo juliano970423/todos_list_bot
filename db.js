@@ -33,6 +33,20 @@ async function initDatabase(env) {
   } catch (e) {
     console.error("email_state 初始化失敗:", e.message);
   }
+
+  // 管理模式勾選狀態（callback_data 64-byte 上限放不下 id 清單，改存 DB）
+  try {
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS pending_delete (
+        user_id TEXT PRIMARY KEY,
+        ids TEXT DEFAULT '[]',
+        context TEXT DEFAULT '',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+  } catch (e) {
+    console.error("pending_delete 初始化失敗:", e.message);
+  }
 }
 
 // --- email_state 操作 ---
@@ -93,8 +107,11 @@ async function addTodosBatch(env, userId, items) {
 }
 
 // 獲取待辦清單
-async function getTodos(env, userId, status = 0) {
-  const { results } = await env.DB.prepare("SELECT * FROM todos WHERE user_id = ? AND status = ?").bind(userId, status).all();
+async function getTodos(env, userId, status = 0, limit = 200) {
+  const { results } = await env.DB
+    .prepare("SELECT * FROM todos WHERE user_id = ? AND status = ? LIMIT ?")
+    .bind(userId, status, limit)
+    .all();
   return results;
 }
 
@@ -125,6 +142,36 @@ async function updateCronTodoNextTime(env, todoId, nextTs) {
   await env.DB.prepare("UPDATE todos SET remind_at = ? WHERE id = ?").bind(nextTs, todoId).run();
 }
 
+// --- pending_delete（管理模式勾選清單，DB 端保存避免 callback_data 超長） ---
+async function getPendingDeleteIds(env, userId) {
+  try {
+    const row = await env.DB.prepare("SELECT ids FROM pending_delete WHERE user_id = ?").bind(userId).first();
+    if (!row) return [];
+    const arr = JSON.parse(row.ids || "[]");
+    return Array.isArray(arr) ? arr.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function savePendingDeleteIds(env, userId, ids, context = "") {
+  const arr = Array.isArray(ids) ? ids.map(String) : [];
+  await env.DB.prepare(`
+    INSERT INTO pending_delete (user_id, ids, context, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id) DO UPDATE SET
+      ids = excluded.ids,
+      context = excluded.context,
+      updated_at = CURRENT_TIMESTAMP
+  `).bind(String(userId), JSON.stringify(arr), String(context || "")).run();
+}
+
+async function clearPendingDelete(env, userId) {
+  try {
+    await env.DB.prepare("DELETE FROM pending_delete WHERE user_id = ?").bind(String(userId)).run();
+  } catch { /* 初始化前的清理失敗不影響流程 */ }
+}
+
 // 添加歷史記錄
 async function addHistory(env, userId, task, remindAt) {
   await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(userId, task, remindAt).run();
@@ -142,5 +189,8 @@ export {
   updateCronTodoNextTime,
   addHistory,
   getEmailState,
-  saveEmailState
+  saveEmailState,
+  getPendingDeleteIds,
+  savePendingDeleteIds,
+  clearPendingDelete
 };

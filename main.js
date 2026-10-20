@@ -11,7 +11,23 @@ export default {
     const bot = new Bot(env.BOT_TOKEN);
     await bot.init(); // 初始化機器人
 
-    // --- 新增: /help 指令處理 ---
+    // --- 新增: /start 指令處理（沒有這個，/start 會被當任務文字送去 AI 解析） ---
+    bot.command("start", async (ctx) => {
+      const startMessage = `🐱 <b>喵～我是你的待辦事項機器人！</b>\n\n` +
+`<b>新增任務：</b>直接說「提醒我明天下午3點開會」，或一次多筆：\n` +
+`<code>明天買牛奶、麵包、雞蛋</code>\n\n` +
+`<b>常用指令：</b>\n` +
+`• <code>/list</code> - 查看待辦\n` +
+`• <code>/history</code> - 查看完成紀錄\n` +
+`• <code>/list 例行</code> - 查看週期任務\n` +
+`• <code>/list 明天</code> / <code>/list 本週</code> - 範圍查詢\n` +
+`• <code>/email_now</code> 立即抓信產生摘要（Email Digest）\n• <code>/email_status</code> 查看信箱設定喵\n\n` +
+`完整說明請打 <code>/help</code> 喵～ 🐾`;
+
+      await ctx.reply(startMessage, { parse_mode: "HTML" });
+    });
+
+    // --- /help 指令處理 ---
     bot.command("help", async (ctx) => {
       const helpMessage = `🐱 <b>喵～待辦事項機器人使用說明</b>
 
@@ -88,7 +104,13 @@ export default {
     });
 
     // 使用 Grammy 的 webhook 适配器
-    const update = await request.json();
+    // 非 JSON 請求（瀏覽器直接開網址等）一律回 OK，避免 500
+    let update;
+    try {
+      update = await request.json();
+    } catch (e) {
+      return new Response("OK");
+    }
     await bot.handleUpdate(update);
     return new Response("OK");
   },

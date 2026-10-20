@@ -345,7 +345,17 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
 
   if (target && api) {
     try {
-      await api.sendMessage(target, msg, { parse_mode: "HTML" });
+      // 訊息超過 4096 會被 Telegram 拒收（MAIL_MAX_MAILS 開大時可能發生），切多段送
+      if (msg.length <= 4096) {
+        await api.sendMessage(target, msg, { parse_mode: "HTML" });
+      } else {
+        let rest = msg;
+        while (rest.length > 0) {
+          const part = rest.slice(0, 4090);
+          rest = rest.slice(4090);
+          await api.sendMessage(target, part, rest ? {} : { parse_mode: "HTML" });
+        }
+      }
     } catch (e) {
       console.error(`[email_digest][${mb.key}] 送出摘要失敗:`, e);
       return { key: mb.key, name: mb.name, skipped: false, ok: false, stage: "send", error: String(e?.message || e) };

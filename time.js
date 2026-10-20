@@ -127,38 +127,65 @@ function getTaipeiTimeString(dateObj) {
 }
 
 // 基於上次設定的時間計算下次時間 (避免時間漂移)
-function calculateNext(lastTs, rule) {
-  let d = new Date(lastTs * 1000);
+// 一律用台北時鐘（+8h shifted）計算星期/日期，避免 UTC 錯位；
+// 若算出來的時間還沒超過「現在」（如 overdue），持續往前跳到未來，
+// 避免 cron 每輪都重複觸發同一筆過期任務。
+function calculateNext(lastTs, rule, nowTs = null) {
+  const nowSec = (nowTs ?? Math.floor(Date.now() / 1000));
+  const TAIPEI_CLOCK_MS = TAIPEI_OFFSET * 60000;
+  // 把運算時鐘固定在台北牆上時間（Date 內部值 = 台北時間；getUTC* 皆代表台北曆法）
+  const d = new Date(lastTs * 1000 + TAIPEI_CLOCK_MS);
+  const toSec = (dt) => Math.floor((dt.getTime() - TAIPEI_CLOCK_MS) / 1000);
 
-  if (rule === 'daily') {
-    d.setDate(d.getDate() + 1);
-  } else if (rule.startsWith('weekly:')) {
-    const days = rule.split(':')[1].split(',').map(Number);
-    const currentDayOfWeekISO = d.getDay() === 0 ? 7 : d.getDay();
+  let ts = -Infinity;
 
-    let nextDayOffset = 1;
-    let found = false;
-
-    while (nextDayOffset <= 7 && !found) {
-      let potentialDay = (currentDayOfWeekISO + nextDayOffset) % 7;
-      if (potentialDay === 0) potentialDay = 7;
-      if (days.includes(potentialDay)) {
-        found = true;
-        d.setDate(d.getDate() + nextDayOffset);
-      } else {
-        nextDayOffset++;
+  for (let hop = 0; hop < 400; hop++) {
+    if (rule === 'daily') {
+      d.setUTCDate(d.getUTCDate() + 1);
+    } else if (rule.startsWith('weekly:')) {
+      const days = rule.split(':')[1].split(',').map(Number);
+      const currentISO = d.getUTCDay() === 0 ? 7 : d.getUTCDay();
+      let found = false;
+      for (let offset = 1; offset <= 7; offset++) {
+        const pot = ((currentISO - 1 + offset) % 7) + 1;
+        if (days.includes(pot)) {
+          d.setUTCDate(d.getUTCDate() + offset);
+          found = true;
+          break;
+        }
       }
+      if (!found) {
+        // 規則無有效星期，退而求其次往後一天，避免無限觸發
+        d.setUTCDate(d.getUTCDate() + 1);
+      }
+    } else if (rule.startsWith('monthly:')) {
+      const dayOfMonth = parseInt(rule.split(':')[1]) || d.getUTCDate();
+      // 先落回 1 號再換月，避免 31→下月溢出（Jan31+1月 會被 JS normalize 成 Mar3）
+      d.setUTCDate(1);
+      d.setUTCMonth(d.getUTCMonth() + 1);
+      // 該月最後一天（處理 31→小月 clamp）
+      const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+      d.setUTCDate(Math.min(dayOfMonth, lastDay));
+    } else if (rule.startsWith('yearly:')) {
+      // 先記下月/日再換年，避免 Feb29 換年 被 normalize 成 Mar1
+      const mo = d.getUTCMonth();
+      const day = d.getUTCDate();
+      d.setUTCDate(1);
+      d.setUTCFullYear(d.getUTCFullYear() + 1);
+      d.setUTCMonth(mo);
+      const y = d.getUTCFullYear();
+      const isLeap = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0));
+      d.setUTCDate(mo === 1 && day === 29 && !isLeap ? 28 : day);
+    } else {
+      // 未支援的規則：往後一天，避免同一時間重複觸發
+      d.setUTCDate(d.getUTCDate() + 1);
     }
-  } else if (rule.startsWith('monthly:')) {
-    d.setMonth(d.getMonth() + 1);
-  } else if (rule.startsWith('yearly:')) {
-    d.setFullYear(d.getFullYear() + 1);
-    if (d.getMonth() === 1 && d.getDate() === 29 && !(d.getFullYear() % 4 === 0 && (d.getFullYear() % 100 !== 0 || d.getFullYear() % 400 === 0))) {
-      d.setDate(28);
-    }
+
+    ts = toSec(d);
+    if (ts > nowSec) return ts;
   }
 
-  return Math.floor(d.getTime() / 1000);
+  return ts > 0 ? ts : nowSec + 86400;
 }
 
 // 獲取當天開始時間戳（已校正時區）
