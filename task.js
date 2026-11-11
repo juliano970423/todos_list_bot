@@ -1,7 +1,7 @@
 // task.js - 任務處理模組
 import { InlineKeyboard, InputFile } from "grammy";
 import { formatTimestampToTaipeiTime, formatDateSmart, formatDateTimeSmart, formatShortDateSmart, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei, getMorningReportRangeTaipei, getEveningReportRangeTaipei } from "./time.js";
-import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime } from "./db.js";
+import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime, getReportState, saveReportState } from "./db.js";
 import { calculateNext } from "./time.js";
 import { generateScheduleImage } from "./image.js";
 
@@ -609,6 +609,9 @@ async function processScheduledReminders(bot, env) {
   const currentDayOfWeekISO = currentDayOfWeek === 0 ? 7 : currentDayOfWeek; // Convert to ISO (1 for Mon, ..., 7 for Sun)
 
   try {
+    // 0. 每日彙整（先於提醒：狀態制防漏發，提醒的錯誤不再拖垮當日報告）
+    await processDailyReports(bot, env, nowTaipei);
+
     // 1. 檢查提醒 (精確時間)
     const { results: allReminders } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0 AND remind_at > 0 AND remind_at <= ?").bind(nowTs).all();
 
@@ -627,7 +630,17 @@ async function processScheduledReminders(bot, env) {
     }
 
     for (const todo of remindersToProcess) {
-      await sendBotMessageHtml(bot.api, todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${escapeHtml(todo.task)}`);
+      // 全天任務夜間靜音：00:00-08:59 不敲鐘（無時刻任務的 remind_at 一律為當日 00:00，
+      // 舊行為會在半夜 00:0x 轟一天 🔔）。改為 9 點後第一個 tick 發出，內容同時由早報呈現。
+      if (todo.all_day && nowTaipei.getUTCHours() < 9) continue;
+
+      try {
+        await sendBotMessageHtml(bot.api, todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${escapeHtml(todo.task)}`);
+      } catch (e) {
+        // 單筆發送失敗：不記錄/不推進（下個 tick 自動重試），也不中斷整輪
+        logSendError("提醒", `發送 todo#${todo.id}`, e);
+        continue;
+      }
 
       if (!todo.cron_rule) {
         // 單次任務 -> 記錄歷史 + 標記完成
@@ -641,133 +654,178 @@ async function processScheduledReminders(bot, env) {
       }
     }
 
-    // 2. 每日彙整 (早晚 9 點)
-    const h = nowTaipei.getUTCHours();
-    const m = nowTaipei.getUTCMinutes();
-    console.log(`[每日报告] 当前台北时间: ${h}:${m}, nowTaipei: ${nowTaipei.toISOString()}`);
-    if ((h === 9 || h === 21) && m < 1) {
-      console.log(`[每日报告] 触发报告发送，isMorning: ${h === 9}`);
-      const isMorning = (h === 9);
-      const timeRange = isMorning ? getMorningReportRangeTaipei() : getEveningReportRangeTaipei();
-      console.log(`[每日报告] 时间范围: ${timeRange.start} - ${timeRange.end}`);
+  } catch (e) {
+    logSendError("Cron", "定時任務", e);
+  }
+}
 
-      // 获取所有有待办事项的用户
-      const { results: userRows } = await env.DB.prepare(
-        "SELECT DISTINCT user_id FROM todos WHERE status = 0"
-      ).all();
-      console.log(`[每日报告] 找到 ${userRows.length} 个有待办的用户`);
+// 台北今日日期字串 YYYY-MM-DD（+8h shifted clock 的 UTC 曆法即台北日曆）
+function taipeiTodayStr(nowTaipei) {
+  const d = nowTaipei || getNowTaipei();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
 
-      for (const row of userRows) {
-        const userId = row.user_id;
-        console.log(`[每日报告] 处理用户 ${userId}`);
+// 每日彙整（早晚報告）— 狀態制防漏發：
+// 舊版依賴 m<1 尖峰窗口，cron 延遲 1 分鐘就整天漏發；改為「當天未發且已過目標時刻就發」：
+//   早報：09:00 ≤ 台北時間 < 21:00 之間的第一個 tick
+//   晚報：台北時間 ≥ 21:00 之後的第一個 tick
+// 發送成功（或當天無內容）才寫入 report_state；失敗則下個 tick 自動補發（at-least-once）。
+async function processDailyReports(bot, env, nowTaipei) {
+  const h = nowTaipei.getUTCHours();
+  const isMorning = h >= 9 && h < 21;
+  const isEvening = h >= 21;
+  if (!isMorning && !isEvening) return;
 
-        // 获取用户所有未完成的待办
-        const allTodos = await getTodos(env, userId, 0);
-        console.log(`[每日报告] 用户 ${userId} 有 ${allTodos.length} 个未完成的待办`);
+  const kind = isMorning ? "morning" : "evening";
+  const today = taipeiTodayStr(nowTaipei);
+  const lastDate = await getReportState(env, kind);
+  if (lastDate === today) return; // 今天已發過
+  const timeRange = isMorning ? getMorningReportRangeTaipei() : getEveningReportRangeTaipei();
 
-        // 过滤出在报告时间范围内的任务（包括周期任务）
-        const filtered = allTodos.filter(t => {
-          if (t.cron_rule) {
-            // 周期任务：检查下次执行时间是否在报告时间范围内
-            return t.remind_at >= timeRange.start && t.remind_at <= timeRange.end;
+  // 有未完成待辦的用戶（單人使用情境即本人）
+  const { results: userRows } = await env.DB.prepare(
+    "SELECT DISTINCT user_id FROM todos WHERE status = 0"
+  ).all();
+  let anySuccess = userRows.length === 0; // 沒有對象也視為當日完成，避免整天重查
+
+  for (const row of userRows) {
+    const userId = row.user_id;
+    try {
+      const allTodos = await getTodos(env, userId, 0);
+
+      // 過濾：週期任務以「範圍內是否會發生」判斷（與 /list 同語意，過期 remind_at 不再漏掉）；
+      // 單次任務以 remind_at 落在範圍內判斷
+      const filtered = allTodos.filter(t => {
+        if (t.cron_rule && t.remind_at > 0) {
+          return recurringMatchesRange(t.cron_rule, timeRange.start, timeRange.end);
+        }
+        return t.remind_at >= timeRange.start && t.remind_at <= timeRange.end;
+      });
+
+      // 昨日以前未完成的單次任務（早報專屬提醒區塊；早報範圍是今天 00:00 起，
+      // 逾期任務不在主清單範圍內，需要獨立區塊才看得到）
+      let overdueRows = [];
+      if (isMorning) {
+        try {
+          const { results } = await env.DB.prepare(
+            "SELECT * FROM todos WHERE user_id = ? AND status = 0 AND remind_at > 0 AND remind_at < ? AND (cron_rule IS NULL OR cron_rule = '' OR cron_rule = 'none' OR cron_rule = 'null') ORDER BY remind_at ASC LIMIT 20"
+          ).bind(userId, timeRange.start).all();
+          overdueRows = results || [];
+        } catch (e) {
+          logSendError("每日報告", `查詢逾期任務 ${userId}`, e);
+        }
+      }
+
+      if (filtered.length > 0 || overdueRows.length > 0) {
+        let msg = `📋 <b>${isMorning ? '今日待辦' : '今晚及明日待辦'}</b>\n\n`;
+
+        // 顯示/排序用有效時間（週期任務取範圍內下次發生日；無期限放最後）
+        const effTs = new Map();
+        for (const t of filtered) {
+          if (t.cron_rule && t.remind_at > 0) {
+            const occ = nextOccurrenceInRange(t.cron_rule, t.remind_at, timeRange.start, timeRange.end);
+            effTs.set(t.id, occ !== null ? occ : t.remind_at);
+          } else {
+            effTs.set(t.id, t.remind_at);
           }
-          // 单次任务：检查是否在时间范围内
-          return t.remind_at >= timeRange.start && t.remind_at <= timeRange.end;
+        }
+        filtered.sort((a, b) => {
+          const ea = effTs.get(a.id), eb = effTs.get(b.id);
+          if (ea === -1) return 1;
+          if (eb === -1) return -1;
+          return ea - eb;
         });
-        console.log(`[每日报告] 用户 ${userId} 过滤后有 ${filtered.length} 个待办在报告范围内`);
 
-        if (filtered.length > 0) {
-          let msg = `📋 <b>${isMorning ? '今日待辦 (9:00-24:00)' : '今晚及明日待辦 (21:00-24:00)'}</b>\n\n`;
-
-          // 排序：先发生的在前面
-          filtered.sort((a, b) => {
-            if (a.remind_at === -1) return 1;
-            if (b.remind_at === -1) return -1;
-            return a.remind_at - b.remind_at;
-          });
-
-          filtered.forEach((t, i) => {
-            let timeStr = '';
-            if (t.cron_rule) {
-              timeStr = `🔄 ${translateRule(t.cron_rule)}`;
-            } else if (t.all_day) {
-              timeStr = '☀️ ' + formatDateSmart(t.remind_at) + ' (全天)';
-            } else if (t.remind_at !== -1) {
-              timeStr = formatDateTimeSmart(t.remind_at);
+        filtered.forEach((t, i) => {
+          let timeStr = '';
+          if (t.cron_rule) {
+            const showTs = effTs.get(t.id);
+            if (showTs > 0) {
+              timeStr = (t.all_day ? formatDateSmart(showTs) + " (全天)" : formatDateTimeSmart(showTs)) + ` (${translateRule(t.cron_rule)})`;
             } else {
-              timeStr = '無期限';
+              timeStr = `🔄 ${translateRule(t.cron_rule)}`;
             }
-            msg += `${i + 1}. [${timeStr}] ${escapeHtml(t.task)}\n`;
+          } else if (t.all_day) {
+            timeStr = '☀️ ' + formatDateSmart(t.remind_at) + ' (全天)';
+          } else if (t.remind_at !== -1) {
+            timeStr = formatDateTimeSmart(t.remind_at);
+          } else {
+            timeStr = '無期限';
+          }
+          msg += `${i + 1}. [${timeStr}] ${escapeHtml(t.task)}\n`;
+        });
+
+        if (overdueRows.length > 0) {
+          msg += `\n⚠️ <b>昨日以前未完成 (${overdueRows.length} 筆)</b>\n`;
+          overdueRows.slice(0, 10).forEach((t, i) => {
+            msg += `${i + 1}. [${formatDateSmart(t.remind_at)}] ${escapeHtml(t.task)}\n`;
           });
+          if (overdueRows.length > 10) msg += `…等共 ${overdueRows.length} 筆喵\n`;
+        }
 
+        // 產生圖片並發送（SVG 以文件形式發送，sendPhoto 會拒收 SVG）
+        try {
+          const reportType = isMorning ? 'morning' : 'evening';
+          const reportTitle = isMorning ? '今日待辦' : '今晚及明日待辦';
+          // 用真實 instant 渲染台北日期（getNowTaipei 是 +8h shifted clock，不可再套 timeZone）
+          const dateStr = new Date(Date.now()).toLocaleString('zh-TW', {
+            timeZone: 'Asia/Taipei',
+            month: 'numeric',
+            day: 'numeric',
+            weekday: 'short',
+          });
+          let imgBuffer = null;
           try {
-            console.log(`[每日报告] 准备发送消息给用户 ${userId}`);
-
-            // 產生圖片並發送（SVG 以文件形式發送，sendPhoto 會拒收 SVG）
+            imgBuffer = generateScheduleImage(filtered.length ? filtered : overdueRows, {
+              title: reportTitle,
+              dateStr: dateStr,
+              type: reportType,
+            });
+          } catch (genErr) {
+            logSendError("每日報告", "SVG 產生", genErr);
+          }
+          const reportChunks = chunkText(msg, 4096);
+          const sendReportText = async () => {
+            for (const part of reportChunks) {
+              await sendBotMessageHtml(bot.api, userId, part);
+            }
+          };
+          if (imgBuffer) {
             try {
-              const reportType = isMorning ? 'morning' : 'evening';
-              const reportTitle = isMorning ? '今日待辦' : '今晚及明日待辦';
-              // 用真實 instant 渲染台北日期（getNowTaipei 是 +8h shifted clock，不可再套 timeZone）
-              const dateStr = new Date(Date.now()).toLocaleString('zh-TW', {
-                timeZone: 'Asia/Taipei',
-                month: 'numeric',
-                day: 'numeric',
-                weekday: 'short',
-              });
-              let imgBuffer = null;
-              try {
-                imgBuffer = generateScheduleImage(filtered, {
-                  title: reportTitle,
-                  dateStr: dateStr,
-                  type: reportType,
+              // caption 上限 1024，太長就只送圖，文字另外分批送
+              if (msg.length <= 1024) {
+                await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {
+                  caption: msg,
+                  parse_mode: "HTML",
                 });
-                console.log(`[每日报告] SVG 產生成功, ${imgBuffer.length} bytes, user=${userId}`);
-              } catch (genErr) {
-                logSendError("每日报告", "SVG 產生", genErr);
-              }
-              const reportChunks = chunkText(msg, 4096);
-              const sendReportText = async () => {
-                for (const part of reportChunks) {
-                  await sendBotMessageHtml(bot.api, userId, part);
-                }
-              };
-              if (imgBuffer) {
-                try {
-                  // caption 上限 1024，太長就只送圖，文字另外分批送
-                  if (msg.length <= 1024) {
-                    await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {
-                      caption: msg,
-                      parse_mode: "HTML",
-                    });
-                  } else {
-                    await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {});
-                    await sendReportText();
-                  }
-                } catch (sendErr) {
-                  logSendError("每日报告", "SVG 文件發送", sendErr);
-                  await sendReportText();
-                }
               } else {
+                await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {});
                 await sendReportText();
               }
-            } catch (imgErr) {
-              logSendError("每日报告", "圖片流程", imgErr);
-              for (const part of chunkText(msg, 4096)) {
-                await sendBotMessageHtml(bot.api, userId, part);
-              }
+            } catch (sendErr) {
+              logSendError("每日報告", "SVG 文件發送", sendErr);
+              await sendReportText();
             }
-
-            console.log(`[每日报告] 成功发送报告给用户 ${userId}`);
-          } catch (e) {
-            logSendError("每日报告", `发送报告给 ${userId}`, e);
+          } else {
+            await sendReportText();
+          }
+        } catch (imgErr) {
+          logSendError("每日報告", "圖片流程", imgErr);
+          for (const part of chunkText(msg, 4096)) {
+            await sendBotMessageHtml(bot.api, userId, part);
           }
         }
       }
-    } else {
-      console.log(`[每日报告] 未到报告时间，当前: ${h}:${m}`);
+
+      anySuccess = true; // 該用戶流程走完（發送成功或無內容）
+    } catch (e) {
+      logSendError("每日報告", `處理 ${userId}`, e);
     }
-  } catch (e) {
-    logSendError("Cron", "定時任務", e);
+  }
+
+  if (anySuccess) {
+    await saveReportState(env, kind, today);
+    console.log(`[每日報告] ${kind} 完成 (${today})`);
   }
 }
 
@@ -809,6 +867,7 @@ export {
   encodeBatchPayload,
   decodeBatchPayload,
   processScheduledReminders,
+  processDailyReports,
   translateRule,
   renderRecurringTasks,
   escapeHtml,

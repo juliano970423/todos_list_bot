@@ -34,6 +34,19 @@ async function initDatabase(env) {
     console.error("email_state 初始化失敗:", e.message);
   }
 
+  // 每日彙整狀態表（kind: morning/evening；當日防漏發、防重複發送）
+  try {
+    await env.DB.prepare(`
+      CREATE TABLE IF NOT EXISTS report_state (
+        kind TEXT PRIMARY KEY,
+        last_date TEXT DEFAULT '',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+  } catch (e) {
+    console.error("report_state 初始化失敗:", e.message);
+  }
+
   // 管理模式勾選狀態（callback_data 64-byte 上限放不下 id 清單，改存 DB）
   try {
     await env.DB.prepare(`
@@ -75,6 +88,31 @@ async function saveEmailState(env, mailboxKey, processed, lastDigestDate) {
       last_digest_date = excluded.last_digest_date,
       updated_at = CURRENT_TIMESTAMP
   `).bind(mailboxKey, JSON.stringify(arr), String(lastDigestDate || "")).run();
+}
+
+// --- report_state 操作（每日彙整狀態：kind 當天最後成功發送日） ---
+
+async function getReportState(env, kind) {
+  try {
+    const row = await env.DB.prepare("SELECT last_date FROM report_state WHERE kind = ?").bind(kind).first();
+    return row ? (row.last_date || "") : "";
+  } catch {
+    return "";
+  }
+}
+
+async function saveReportState(env, kind, lastDate) {
+  try {
+    await env.DB.prepare(`
+      INSERT INTO report_state (kind, last_date, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(kind) DO UPDATE SET
+        last_date = excluded.last_date,
+        updated_at = CURRENT_TIMESTAMP
+    `).bind(kind, String(lastDate || "")).run();
+  } catch (e) {
+    console.error("report_state 儲存失敗:", e.message);
+  }
 }
 
 // 新增待辦事項
@@ -190,6 +228,8 @@ export {
   addHistory,
   getEmailState,
   saveEmailState,
+  getReportState,
+  saveReportState,
   getPendingDeleteIds,
   savePendingDeleteIds,
   clearPendingDelete

@@ -266,12 +266,13 @@ function formatShortDateSmart(timestamp) {
 
 /**
  * 獲取早上報告時間範圍（台北時間）
- * 今天 9:00 - 今天 23:59:59
+ * 今天 00:00 - 今天 23:59:59（真正的「當天」綜整：全天任務存 remind_at=當日00:00，
+ * 舊版 9:00 起算會把它們整批漏掉）
  */
 function getMorningReportRangeTaipei() {
   const now = getNowTaipei();
   const start = new Date(now);
-  start.setHours(9, 0, 0, 0);
+  start.setHours(0, 0, 0, 0);
   const end = new Date(now);
   end.setHours(23, 59, 59, 999);
   return {

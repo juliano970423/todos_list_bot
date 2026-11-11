@@ -1,4 +1,8 @@
 // image.js - SVG 圖片產生模組
+// 注意：Workers 舊版 nodejs_compat（compat date < 2024-09-23）沒有全域 Buffer，
+// 必須從 node:buffer 顯式 import，否則 generateScheduleImage 會丟 ReferenceError，
+// 導致所有 SVG 圖片永遠發送失敗（一律落入純文字 fallback）。
+import { Buffer } from "node:buffer";
 import { formatDateSmart, formatDateTimeSmart } from "./time.js";
 
 /**

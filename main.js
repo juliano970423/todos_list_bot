@@ -5,6 +5,8 @@ import { processScheduledReminders } from "./task.js";
 import { handleEmailNow, handleEmailStatus, runEmailDigest } from "./email_digest.js";
 import { getNowTaipei } from "./time.js";
 
+let cronDigestBusy = false; // 單飛：同一 isolate 內避免相鄰 tick 並發跑摘要（重複抓信/重複加待辦）
+
 export default {
   async fetch(request, env, ctx) {
     await initDatabase(env);
@@ -120,15 +122,24 @@ export default {
     const bot = new Bot(env.BOT_TOKEN);
     await processScheduledReminders(bot, env);
 
-    // --- 每日 Email 摘要 (台北時間早上 9 點，每 2 分鐘 cron tick 的第一次觸發會跑到) ---
+    // --- 每日 Email 摘要 (台北時間早上 9 點) ---
+    // 舊版只在 m<2 的尖峰窗口跑，cron 稍微延遲就整天沒摘要且無重試；
+    // 改為 09:00-09:09 內每個 tick 都嘗試，同一輪成功與否由 last_digest_date 去重
+    //（processOneMailbox 失敗不寫狀態 → 下個 tick 自動重試）
     try {
       const nowTaipei = getNowTaipei();
       const h = nowTaipei.getUTCHours();
       const m = nowTaipei.getUTCMinutes();
-      if (h === 9 && m < 2) {
-        await runEmailDigest(bot.api, env, { force: false, log: (s) => console.log("[email_digest cron]", s) });
+      if (h === 9 && m < 10 && !cronDigestBusy) {
+        cronDigestBusy = true;
+        try {
+          await runEmailDigest(bot.api, env, { force: false, log: (s) => console.log("[email_digest cron]", s) });
+        } finally {
+          cronDigestBusy = false;
+        }
       }
     } catch (e) {
+      cronDigestBusy = false;
       console.error("[email_digest cron] 失敗:", e);
     }
   }
