@@ -119,6 +119,10 @@ export default {
 
   // --- 9. 定時任務 (Cron Trigger) ---
   async scheduled(event, env, ctx) {
+    // cron 不走 fetch()，是唯一不跑 initDatabase 的入口：
+    // 表不存在時 getReportState 會回 ""、saveReportState 靜默失敗，
+    // 導致每日彙整每個 tick 都重發（09:00-21:00 可灌數百則）——必須先建表。
+    await initDatabase(env);
     const bot = new Bot(env.BOT_TOKEN);
     await processScheduledReminders(bot, env);
 

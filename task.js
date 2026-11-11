@@ -670,6 +670,11 @@ function taipeiTodayStr(nowTaipei) {
 //   早報：09:00 ≤ 台北時間 < 21:00 之間的第一個 tick
 //   晚報：台北時間 ≥ 21:00 之後的第一個 tick
 // 發送成功（或當天無內容）才寫入 report_state；失敗則下個 tick 自動補發（at-least-once）。
+
+// isolate 記憶體備忘（key = `${kind}:${today}`）：與 D1 report_state 雙保險。
+// 即使 DB 建表/寫入暫時失敗（表不存在、D1 打嗝），同一 isolate 內也不會重發第二次。
+const dailyReportMemo = new Map();
+
 async function processDailyReports(bot, env, nowTaipei) {
   const h = nowTaipei.getUTCHours();
   const isMorning = h >= 9 && h < 21;
@@ -678,8 +683,13 @@ async function processDailyReports(bot, env, nowTaipei) {
 
   const kind = isMorning ? "morning" : "evening";
   const today = taipeiTodayStr(nowTaipei);
+  const memoKey = `${kind}:${today}`;
+  if (dailyReportMemo.get(memoKey)) return; // 記憶體備忘：今天已發過
   const lastDate = await getReportState(env, kind);
-  if (lastDate === today) return; // 今天已發過
+  if (lastDate === today) {
+    dailyReportMemo.set(memoKey, true); // 回填備忘，之後不再打 DB
+    return; // 今天已發過
+  }
   const timeRange = isMorning ? getMorningReportRangeTaipei() : getEveningReportRangeTaipei();
 
   // 有未完成待辦的用戶（單人使用情境即本人）
@@ -824,6 +834,8 @@ async function processDailyReports(bot, env, nowTaipei) {
   }
 
   if (anySuccess) {
+    // 先寫記憶體備忘再寫 DB：即使 saveReportState 失敗（表不存在等），本 isolate 也不會重發
+    dailyReportMemo.set(memoKey, true);
     await saveReportState(env, kind, today);
     console.log(`[每日報告] ${kind} 完成 (${today})`);
   }
