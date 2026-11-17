@@ -80,7 +80,10 @@ function parseAITimeExpression(timeStr, refDate) {
   }
 
   // ISO 格式 (YYYY-MM-DDTHH:mm[:ss] 或 YYYY-MM-DD HH:MM)
-  if (s.includes('T') || /^\d{4}-\d{1,2}-\d{1,2}/.test(s)) {
+  // 注意：只能用「開頭就是日期」的嚴格 regex 判斷。不能用 includes('T')——
+  // "Thursday 13:00" 開頭的 T 會誤入此分支 → new Date(...) 得 Invalid → 回 null，
+  // chrono 根本沒機會執行（實錘 bug：每週四任務 time "Thursday 13:00" 變「無法解析」）。
+  if (/^\d{4}-\d{1,2}-\d{1,2}/.test(s)) {
     // YYYY-MM-DD [HH:MM]（含空格分隔也支援）
     const isoMatch = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
     if (isoMatch) {
@@ -199,6 +202,23 @@ function parseAITimeExpression(timeStr, refDate) {
       parsedDate.setDate(parsedDate.getDate() + 1);
     }
   }
+  // 英文星期名（可含 next/this 前綴與可選 HH:MM），例："Thursday 13:00"、"Friday"、"next Monday 21:00"
+  // （不依賴 chrono：本地直接算下一次該星期幾，與 weekly:X 規則語意一致）
+  else if (/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(s)) {
+    const wdMatch = s.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+    const timeMatch = s.match(/(\d{1,2}):(\d{2})/);
+    const isoMap = { monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6, sunday: 7 };
+    const targetISO = isoMap[wdMatch[1].toLowerCase()];
+    parsedDate = new Date(refDate);
+    const curISO = parsedDate.getDay() === 0 ? 7 : parsedDate.getDay();
+    let offset = (targetISO - curISO + 7) % 7;
+    if (offset === 0) offset = 7; // 今天就是該星期 → 推到下週（forwardDate 語意）
+    parsedDate.setDate(parsedDate.getDate() + offset);
+    if (timeMatch) {
+      parsedDate.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]), 0, 0);
+      if (parsedDate.getTime() <= refDate.getTime()) parsedDate.setDate(parsedDate.getDate() + 7);
+    }
+  }
   // 其他：使用 chrono 解析
   else {
     const results = chrono.parse(timeStr, refDate, { forwardDate: true });
@@ -213,6 +233,31 @@ function parseAITimeExpression(timeStr, refDate) {
     return parsedDate;
   }
   return null;
+}
+
+/**
+ * 把只帶 HH:MM 的時間對齊到 weekly:X 規則指定的星期
+ * （例：weekly:4 + "13:00" 在週二解析 → 下個週四 13:00，而不是本週二 13:00）
+ * @param {Date} date - 已解析的時間（含 HH:MM）
+ * @param {string} rule - weekly:X 格式
+ * @param {Date} refDate - 參考時間
+ * @returns {Date} 對齊後的時間
+ */
+function alignDateToWeekly(date, rule, refDate) {
+  const days = String((rule.split(':')[1] || '')).split(',').map(Number).filter(n => n >= 1 && n <= 7);
+  if (!days.length) return date;
+  const d = new Date(date);
+  const curISO = d.getDay() === 0 ? 7 : d.getDay();
+  // 今天就是規則星期且時刻未過 → 直接用今天
+  if (days.includes(curISO) && d.getTime() > refDate.getTime()) return d;
+  for (let offset = 1; offset <= 7; offset++) {
+    const iso = ((curISO - 1 + offset) % 7) + 1;
+    if (days.includes(iso)) {
+      d.setDate(d.getDate() + offset);
+      return d;
+    }
+  }
+  return d;
 }
 
 /**
@@ -404,7 +449,16 @@ function validateBatchItems(rawTasks, refDate, existingTodos = []) {
           warnings.push("無具體時刻，已自動改為全天");
         }
         let finalDate = date;
-        if (rule && !ruleErr) finalDate = ensureFutureDate(date, rule, refDate);
+        if (rule && !ruleErr) {
+          // 時間只有 HH:MM（無日期/星期）且規則是 weekly:X → 對齊到規則星期的同時刻
+          // （例：週二輸入「每週四下午一點」→ AI 應回 time:"13:00" + rule:"weekly:4"，
+          //   第一次提醒必須是週四 13:00，不是本週二 13:00）
+          if (rule.startsWith('weekly:') && /^\d{1,2}:\d{2}$/.test(timeStr.trim())) {
+            finalDate = alignDateToWeekly(date, rule, refDate);
+          } else {
+            finalDate = ensureFutureDate(date, rule, refDate);
+          }
+        }
         if (!finalDate || isNaN(finalDate.getTime())) {
           errors.push(`時間「${timeStr}」計算結果無效`);
         } else {
@@ -593,8 +647,36 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
     }
 
     const validated = validateBatchItems(rawTasks, refDate, existingTodos);
-    const validCount = validated.filter(v => v.valid).length;
     const debugRaw = JSON.stringify(json).slice(0, 1200);
+
+    // 反射重試：輸入含考試/作業/繳交類關鍵字，但有效結果完全沒命中任何一筆
+    // → 補一句「你漏了」的加強提示重跑一次（同一模型），拿命中率更高或有效筆數更多的結果
+    let finalValidated = validated;
+    let finalDebugRaw = debugRaw;
+    const CARE_RE = /期中|期末|考試|考卷|小考|隨堂|測驗|quiz|exam|midterm|final|作業|功課|homework|assignment|報告|essay|繳交|繳費|繳納|截止|due\b|deadline/i;
+    if (CARE_RE.test(text) && !validated.some(v => v.valid && CARE_RE.test(v.task))) {
+      try {
+        const retryPrompt = prompt +
+          "\n\n# CRITICAL RETRY NOTE:\n" +
+          "Your previous answer MISSED at least one exam/homework/deadline item that IS present in USER INPUT.\n" +
+          "Re-extract EVERY actionable item (考試/作業/報告/繳交/繳費/截止/簽到), each WITH its date/time from the input.\n" +
+          "Do not drop any of them. Output the full tasks array again.";
+        const retry = await callAI(env, retryPrompt);
+        const retryTasks = normalizeAIResult(retry.json);
+        if (retryTasks.length) {
+          const retryValidated = validateBatchItems(retryTasks, refDate, existingTodos);
+          const retryValid = retryValidated.filter(v => v.valid);
+          const origValidCount = validated.filter(v => v.valid).length;
+          const retryHasCare = retryValid.some(v => CARE_RE.test(v.task));
+          if (retryHasCare || retryValid.length > origValidCount) {
+            finalValidated = retryValidated;
+            finalDebugRaw = JSON.stringify(retry.json).slice(0, 1200);
+          }
+        }
+      } catch (e) {
+        console.error("[batch] 重試失敗，沿用原結果:", e.message);
+      }
+    }
 
     // 刪除等待訊息
     if (!isRejudgment && waitMsg) {
@@ -604,8 +686,8 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
     const source = isRejudgment ? '🧠 AI (重新判斷)' : '🧠 AI';
 
     // 單筆且有效 -> 沿用舊版單筆確認 UI（體驗不變）
-    if (validated.length === 1 && validated[0].valid) {
-      const v = validated[0];
+    if (finalValidated.length === 1 && finalValidated[0].valid) {
+      const v = finalValidated[0];
       // 若有 warnings，拼到 source 讓使用者看到（單筆 UI 無警告欄）
       const warnSuffix = v.warnings.length ? ` (${v.warnings.join("；").slice(0, 200)})` : "";
       await sendConfirmation(ctx, {
@@ -615,16 +697,16 @@ async function processTaskWithAI(ctx, env, text, isRejudgment = false) {
         allDay: v.allDay,
         source: source + warnSuffix,
         originalText: text,
-        debugRaw
+        debugRaw: finalDebugRaw
       });
       return;
     }
 
     // 多筆，或單筆但有錯誤 -> 批次確認 UI（含各種邏輯錯誤顯示）
-    await sendBatchConfirmation(ctx, validated, {
+    await sendBatchConfirmation(ctx, finalValidated, {
       source,
       originalText: text,
-      debugRaw
+      debugRaw: finalDebugRaw
     });
 
   } catch (e) {
@@ -1462,5 +1544,6 @@ export {
   extractBatchDataFromMessage,
   parseAITimeExpression,
   calculateNextFromRule,
-  ensureFutureDate
+  ensureFutureDate,
+  alignDateToWeekly
 };

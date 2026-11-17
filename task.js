@@ -3,7 +3,8 @@ import { InlineKeyboard, InputFile } from "grammy";
 import { formatTimestampToTaipeiTime, formatDateSmart, formatDateTimeSmart, formatShortDateSmart, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei, getMorningReportRangeTaipei, getEveningReportRangeTaipei } from "./time.js";
 import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime, getReportState, saveReportState } from "./db.js";
 import { calculateNext } from "./time.js";
-import { generateScheduleImage } from "./image.js";
+import { generateSchedulePng } from "./image.js";
+import { compareTasksByPriority, getTaskTier } from "./priority.js";
 
 // 翻譯規則顯示文字
 function translateRule(rule) {
@@ -34,10 +35,36 @@ function translateRule(rule) {
 }
 
 // --- 圖片發送輔助 ---
-// 注意：Telegram sendPhoto 只接受 JPEG/PNG，會拒收 SVG；
-// SVG 改以文件 (document) 發送，客戶端可預覽，caption 與按鈕照常用。
-function toSvgDocument(svgBuffer, name = "schedule.svg") {
-  return new InputFile(svgBuffer, name);
+// Telegram sendPhoto 只接受 JPEG/PNG；SVG 一律先由 image.js 點陣成 PNG 再以照片發送
+//（不再用檔案附件形式）。caption 上限 1024：放得下就併同一則，放不下先送圖再補文字。
+
+// ctx 版：照片 + caption（≤1024 併一則）或照片 + 分批文字
+async function replyWithSchedulePhoto(ctx, png, msg, extra = {}) {
+  if (msg.length <= 1024) {
+    await ctx.replyWithPhoto(new InputFile(png, "schedule.png"), {
+      caption: msg,
+      parse_mode: "HTML",
+      ...extra,
+    });
+  } else {
+    await ctx.replyWithPhoto(new InputFile(png, "schedule.png"), extra);
+    await sendChunked(ctx, msg, { parse_mode: "HTML" });
+  }
+}
+
+// bot.api 版（cron 場景沒有 ctx）
+async function sendSchedulePhoto(api, chatId, png, msg) {
+  if (msg.length <= 1024) {
+    await api.sendPhoto(chatId, new InputFile(png, "report.png"), {
+      caption: msg,
+      parse_mode: "HTML",
+    });
+  } else {
+    await api.sendPhoto(chatId, new InputFile(png, "report.png"), {});
+    for (const part of chunkText(msg, 4096)) {
+      await sendBotMessageHtml(api, chatId, part);
+    }
+  }
 }
 
 // Workers 的 console 對 Error 物件序列化不完整，一律打出 message + stack + Telegram 描述
@@ -110,13 +137,8 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     }
   }
 
-  // 排序：先發生的在前面，無期限(-1)放最後
-  filtered.sort((a, b) => {
-    const ea = effTs.get(a.id), eb = effTs.get(b.id);
-    if (ea === -1) return 1;
-    if (eb === -1) return -1;
-    return ea - eb;
-  });
+  // 排序：考試/作業優先（tier 制），同 tier 照時間，無期限(-1)放最後
+  filtered.sort((a, b) => compareTasksByPriority(a, b, (t) => effTs.get(t.id)));
 
   let msg = `📋 <b>${escapeHtml(label)} 任務清單喵～</b>\n`;
   filtered.forEach((t, i) => {
@@ -141,7 +163,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
       timeDisplay = "無期限";
     }
 
-    msg += `${i+1}. [${timeDisplay}] ${escapeHtml(t.task)}\n`;
+    msg += `${i + 1}. ${getTaskTier(t.task) === 0 ? "📌 " : ""}[${timeDisplay}] ${escapeHtml(t.task)}\n`;
   });
 
   // 如果有時間範圍信息（本地解析或 AI）
@@ -167,7 +189,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     msg += '</code>';
   }
 
-  // 產生圖片並發送
+  // 產生圖片並發送（PNG 照片；失敗退回純文字）
   const dateRange = [];
   if (filtered.length > 0) {
     const firstEff = effTs.get(filtered[0].id);
@@ -179,36 +201,26 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     }
   }
 
-  let imgBuffer = null;
+  let png = null;
   try {
-    imgBuffer = generateScheduleImage(filtered, {
+    png = await generateSchedulePng(filtered, {
       title: label,
       dateStr: dateRange.length ? `${dateRange[0]}${dateRange.length > 1 ? ' ~ ' + dateRange[1] : ''}` : '',
       type: 'list',
     });
-    console.log(`[renderList] SVG 產生成功, ${imgBuffer.length} bytes`);
+    console.log(`[renderList] PNG 產生成功, ${png.byteLength} bytes`);
   } catch (e) {
-    logSendError("renderList", "SVG 產生", e);
+    logSendError("renderList", "PNG 產生", e);
   }
 
-  if (imgBuffer) {
+  if (png) {
     try {
-      // caption 上限 1024 字：放得下就附在圖片上，放不下就先送圖、再分批送文字
-      if (msg.length <= 1024) {
-        await ctx.replyWithDocument(toSvgDocument(imgBuffer), {
-          caption: msg,
-          parse_mode: "HTML",
-          reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
-        });
-      } else {
-        await ctx.replyWithDocument(toSvgDocument(imgBuffer), {
-          reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
-        });
-        await sendChunked(ctx, msg, { parse_mode: "HTML" });
-      }
+      await replyWithSchedulePhoto(ctx, png, msg, {
+        reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
+      });
       return;
     } catch (e) {
-      logSendError("renderList", "SVG 文件發送", e);
+      logSendError("renderList", "照片發送", e);
     }
   }
   await sendChunked(ctx, msg, {
@@ -296,32 +308,24 @@ async function renderHistory(ctx, env, label, startTs = null, endTs = null) {
     }
   }
 
-  let imgBuffer = null;
+  let png = null;
   try {
-    imgBuffer = generateScheduleImage(results, {
+    png = await generateSchedulePng(results, {
       title: label,
       dateStr: dateRange.length ? `${dateRange[0]}${dateRange.length > 1 ? ' ~ ' + dateRange[1] : ''}` : '',
       type: 'history',
     });
-    console.log(`[renderHistory] SVG 產生成功, ${imgBuffer.length} bytes`);
+    console.log(`[renderHistory] PNG 產生成功, ${png.byteLength} bytes`);
   } catch (e) {
-    logSendError("renderHistory", "SVG 產生", e);
+    logSendError("renderHistory", "PNG 產生", e);
   }
 
-  if (imgBuffer) {
+  if (png) {
     try {
-      if (msg.length <= 1024) {
-        await ctx.replyWithDocument(toSvgDocument(imgBuffer, "history.svg"), {
-          caption: msg,
-          parse_mode: "HTML",
-        });
-      } else {
-        await ctx.replyWithDocument(toSvgDocument(imgBuffer, "history.svg"), {});
-        await sendChunked(ctx, msg, { parse_mode: "HTML" });
-      }
+      await replyWithSchedulePhoto(ctx, png, msg);
       return;
     } catch (e) {
-      logSendError("renderHistory", "SVG 文件發送", e);
+      logSendError("renderHistory", "照片發送", e);
     }
   }
   await sendChunked(ctx, msg, { parse_mode: "HTML" });
@@ -739,12 +743,8 @@ async function processDailyReports(bot, env, nowTaipei) {
             effTs.set(t.id, t.remind_at);
           }
         }
-        filtered.sort((a, b) => {
-          const ea = effTs.get(a.id), eb = effTs.get(b.id);
-          if (ea === -1) return 1;
-          if (eb === -1) return -1;
-          return ea - eb;
-        });
+        // 排序：考試/作業優先（tier 制），同 tier 照時間，無期限放最後
+        filtered.sort((a, b) => compareTasksByPriority(a, b, (t) => effTs.get(t.id)));
 
         filtered.forEach((t, i) => {
           let timeStr = '';
@@ -762,7 +762,7 @@ async function processDailyReports(bot, env, nowTaipei) {
           } else {
             timeStr = '無期限';
           }
-          msg += `${i + 1}. [${timeStr}] ${escapeHtml(t.task)}\n`;
+          msg += `${i + 1}. ${getTaskTier(t.task) === 0 ? "📌 " : ""}[${timeStr}] ${escapeHtml(t.task)}\n`;
         });
 
         if (overdueRows.length > 0) {
@@ -773,7 +773,7 @@ async function processDailyReports(bot, env, nowTaipei) {
           if (overdueRows.length > 10) msg += `…等共 ${overdueRows.length} 筆喵\n`;
         }
 
-        // 產生圖片並發送（SVG 以文件形式發送，sendPhoto 會拒收 SVG）
+        // 產生圖片並發送（PNG 照片；失敗退回純文字）
         try {
           const reportType = isMorning ? 'morning' : 'evening';
           const reportTitle = isMorning ? '今日待辦' : '今晚及明日待辦';
@@ -784,40 +784,30 @@ async function processDailyReports(bot, env, nowTaipei) {
             day: 'numeric',
             weekday: 'short',
           });
-          let imgBuffer = null;
+          let png = null;
           try {
-            imgBuffer = generateScheduleImage(filtered.length ? filtered : overdueRows, {
+            png = await generateSchedulePng(filtered.length ? filtered : overdueRows, {
               title: reportTitle,
               dateStr: dateStr,
               type: reportType,
             });
           } catch (genErr) {
-            logSendError("每日報告", "SVG 產生", genErr);
+            logSendError("每日報告", "PNG 產生", genErr);
           }
-          const reportChunks = chunkText(msg, 4096);
-          const sendReportText = async () => {
-            for (const part of reportChunks) {
-              await sendBotMessageHtml(bot.api, userId, part);
-            }
-          };
-          if (imgBuffer) {
+          if (png) {
             try {
-              // caption 上限 1024，太長就只送圖，文字另外分批送
-              if (msg.length <= 1024) {
-                await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {
-                  caption: msg,
-                  parse_mode: "HTML",
-                });
-              } else {
-                await bot.api.sendDocument(userId, toSvgDocument(imgBuffer, "report.svg"), {});
-                await sendReportText();
-              }
+              // caption 上限 1024，太長就只送圖，文字另外分批送（sendSchedulePhoto 內處理）
+              await sendSchedulePhoto(bot.api, userId, png, msg);
             } catch (sendErr) {
-              logSendError("每日報告", "SVG 文件發送", sendErr);
-              await sendReportText();
+              logSendError("每日報告", "照片發送", sendErr);
+              for (const part of chunkText(msg, 4096)) {
+                await sendBotMessageHtml(bot.api, userId, part);
+              }
             }
           } else {
-            await sendReportText();
+            for (const part of chunkText(msg, 4096)) {
+              await sendBotMessageHtml(bot.api, userId, part);
+            }
           }
         } catch (imgErr) {
           logSendError("每日報告", "圖片流程", imgErr);

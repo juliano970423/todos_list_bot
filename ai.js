@@ -39,6 +39,12 @@ function getTaskPrompt(text, now) {
 Analyze the USER INPUT and extract structured data (JSON).
 The input may contain ONE task or MULTIPLE tasks. You MUST split correctly.
 
+# NEVER-DROP RULES (Very Important):
+1. Extract EVERY actionable item mentioned: 考試（期中考/期末考/小考/隨堂測驗）、作業、報告、繳交、繳費、截止、簽到、面試、活動 MUST all appear in "tasks".
+2. Exams and homework are NEVER optional. For any deadline-bearing item (考試/作業/報告/繳交/繳費), the time field MUST capture its date/deadline whenever the input mentions one (e.g. "會計學期中考在11/25" -> time "11-25"). NEVER output a deadline-bearing task with time=null.
+3. If there are more than 10 items, keep the deadline-bearing ones first (exams, homework due dates, payments); drop low-value fillers (問卷/廣告/純參考通知) only as a last resort.
+4. SELF-CHECK before output: count the actionable items in USER INPUT; your "tasks" array must contain exactly that many (max 10).
+
 # BATCH SPLITTING RULES (Very Important):
 1. If input contains only one activity -> return exactly 1 item in "tasks".
 2. If input contains multiple activities, SPLIT into separate items. Split signals include:
@@ -73,6 +79,7 @@ The input may contain ONE task or MULTIPLE tasks. You MUST split correctly.
    - If user says both date and time (e.g. "Jan 1st at 9pm", "兩天後晚上9點", "今天下午8點52分"), return in English parseable format: "Jan 1st 21:00", "in 2 days 20:52", "today 20:52", "tomorrow 20:52".
    - Dates WITHOUT an explicit year (e.g. "1月1號", "Jan 1st") stay year-less ("Jan 1st"); the program rolls them to the next future occurrence. Do NOT invent a year.
    - If no specific time/date mentioned, return null.
+   - **RECURRING + TIME**: if rule != null and a specific clock time is mentioned, time MUST be ONLY the clock time "HH:MM" (e.g. "13:00"). NEVER put weekday names (e.g. "Thursday") in time when rule is weekly:X — the weekday belongs in rule. Day-of-week only appears in time for NON-recurring tasks (e.g. "next Monday").
 3. **rule** (Recurrence, per task):
    - **DEFAULT: null** (This is a one-time task).
    - CRITICAL: If a specific date is mentioned (e.g., "1月1號", "Jan 1st", "兩天後", "後天", "明天") *without any explicit recurrence keywords* (like "每年", "每週", "每日"), the 'rule' MUST be 'null'. Do NOT infer recurrence from specific dates alone.
@@ -109,7 +116,9 @@ The input may contain ONE task or MULTIPLE tasks. You MUST split correctly.
 # Input: "今天下午3點開會，明天早上9點看醫生" -> {"tasks":[{"task":"開會","time":"today 15:00","rule":null,"isAllDay":false},{"task":"看醫生","time":"tomorrow 09:00","rule":null,"isAllDay":false}]}
 # Input: "2026年3月6日開會" -> {"tasks":[{"task":"開會","time":"2026-03-06","rule":null,"isAllDay":true}]}
 # Input: "明年1月1號跨年" (now is 2026) -> {"tasks":[{"task":"跨年","time":"2027-01-01","rule":null,"isAllDay":true}]}
-# Input: "每週五完成微積分webwork" (no HH:MM, even with rule -> all-day) -> {"tasks":[{"task":"完成微積分webwork","time":"Friday","rule":"weekly:5","isAllDay":true}]}
+# Input: "每週五完成微積分webwork" (no HH:MM -> all-day; weekday only in rule, NEVER in time) -> {"tasks":[{"task":"完成微積分webwork","time":null,"rule":"weekly:5","isAllDay":true}]}
+# Input: "每週四下午一點提醒我會計學簽到" (weekly + clock time -> time is HH:MM only) -> {"tasks":[{"task":"會計學簽到","time":"13:00","rule":"weekly:4","isAllDay":false}]}
+# Input: "會計學期中考在11/25，還有要填教學問卷" (exam MUST be extracted with its date) -> {"tasks":[{"task":"會計學期中考","time":"11-25","rule":null,"isAllDay":true},{"task":"填教學問卷","time":null,"rule":null,"isAllDay":true}]}
 `;
 }
 
@@ -148,9 +157,10 @@ Analyze the USER INPUT and extract the time expression and a human-readable labe
 
 
 // --- 8. AI API 調用 (強化版：回傳 raw content) ---
-// opts.model: 覆寫模型（預設輕量 openai-fast 供一般單句任務辨識；email 摘要用強模型）
+// opts.model: 覆寫模型。預設跟 email 摘要同一顆 gpt-6-luna（免費層 reasoning 模型，
+// 對「一次多筆、不可漏項」的提取明顯比 openai-fast 強；env.TASK_AI_MODEL 可調）
 async function callAI(env, prompt, opts = {}) {
-  const model = opts.model || "openai-fast";
+  const model = opts.model || env.TASK_AI_MODEL || "openai/gpt-6-luna";
   let rawContent = "";
   try {
     const res = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
