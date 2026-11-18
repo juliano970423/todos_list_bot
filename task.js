@@ -1,7 +1,7 @@
 // task.js - 任務處理模組
 import { InlineKeyboard, InputFile } from "grammy";
 import { formatTimestampToTaipeiTime, formatDateSmart, formatDateTimeSmart, formatShortDateSmart, TAIPEI_OFFSET, getTodayRangeTaipei, getNowTaipei, getMorningReportRangeTaipei, getEveningReportRangeTaipei } from "./time.js";
-import { addTodo, getTodos, getTodosByTimeRange, updateTodoStatus, addHistory, updateCronTodoNextTime, getReportState, saveReportState } from "./db.js";
+import { addTodo, getTodos, getTodosByTimeRange, addHistory, updateCronTodoNextTime, getReportState, saveReportState } from "./db.js";
 import { calculateNext } from "./time.js";
 import { generateSchedulePng } from "./image.js";
 import { compareTasksByPriority, getTaskTier } from "./priority.js";
@@ -52,15 +52,16 @@ async function replyWithSchedulePhoto(ctx, png, msg, extra = {}) {
   }
 }
 
-// bot.api 版（cron 場景沒有 ctx）
-async function sendSchedulePhoto(api, chatId, png, msg) {
+// bot.api 版（cron 場景沒有 ctx）；extra 透傳給 sendPhoto（例：逾期清掃按鈕）
+async function sendSchedulePhoto(api, chatId, png, msg, extra = {}) {
   if (msg.length <= 1024) {
     await api.sendPhoto(chatId, new InputFile(png, "report.png"), {
       caption: msg,
       parse_mode: "HTML",
+      ...extra,
     });
   } else {
-    await api.sendPhoto(chatId, new InputFile(png, "report.png"), {});
+    await api.sendPhoto(chatId, new InputFile(png, "report.png"), extra);
     for (const part of chunkText(msg, 4096)) {
       await sendBotMessageHtml(api, chatId, part);
     }
@@ -78,11 +79,6 @@ function logSendError(tag, stage, e) {
 async function renderList(ctx, env, label, startTs = null, endTs = null, aiResult = null) {
   const userId = ctx.from.id.toString();
   const results = await getTodos(env, userId, 0);
-
-  // start/end 必須在最前面宣告（例行分支的 mg 按鈕會用到，若放後面會 TDZ crash）
-  const todayRange = getTodayRangeTaipei();
-  const start = startTs ?? todayRange.start;
-  const end = endTs ?? todayRange.end;
 
   // 如果是例行性任務查詢，直接返回所有週期性任務
   if (label === "例行性任務清單") {
@@ -118,13 +114,33 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     });
   }
 
+  const view = await buildListView(env, userId, label, startTs, endTs, aiResult, results);
+  if (!view) return ctx.reply(`😿 喵～${escapeHtml(label)} 沒有待辦事項呢～`);
+  if (view.png) {
+    try {
+      await replyWithSchedulePhoto(ctx, view.png, view.msg, { reply_markup: view.kb });
+      return;
+    } catch (e) {
+      logSendError("renderList", "照片發送", e);
+    }
+  }
+  await sendChunked(ctx, view.msg, { parse_mode: "HTML", reply_markup: view.kb });
+}
+
+// --- 4b. 清單視圖建構（發送與「標完成後就地更新」共用） ---
+// start/end 可為 null（自動帶今天範圍）；results 由呼叫端傳入避免重複查詢
+async function buildListView(env, userId, label, start, end, aiResult, results) {
+  const todayRange = getTodayRangeTaipei();
+  start = start ?? todayRange.start;
+  end = end ?? todayRange.end;
+
    const filtered = results.filter(t => {
     if (t.cron_rule) {
       return recurringMatchesRange(t.cron_rule, start, end);
     }
     return t.remind_at === -1 || (t.remind_at >= start && t.remind_at <= end);
   });
-  if (!filtered.length) return ctx.reply(`😿 喵～${escapeHtml(label)} 沒有待辦事項呢～`);
+  if (!filtered.length) return null;
 
   // 週期任務以「範圍內下次發生日」作為顯示與排序依據，避免舊 remind_at 誤導（如 /list 明年 顯示去年的日期）
   const effTs = new Map();
@@ -189,7 +205,7 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     msg += '</code>';
   }
 
-  // 產生圖片並發送（PNG 照片；失敗退回純文字）
+  // 產生圖片（PNG；失敗時 png=null，呼叫端退回純文字）
   const dateRange = [];
   if (filtered.length > 0) {
     const firstEff = effTs.get(filtered[0].id);
@@ -213,20 +229,52 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
     logSendError("renderList", "PNG 產生", e);
   }
 
-  if (png) {
-    try {
-      await replyWithSchedulePhoto(ctx, png, msg, {
-        reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
-      });
-      return;
-    } catch (e) {
-      logSendError("renderList", "照片發送", e);
+  // 按鈕：管理喵一律有；每筆「✅ N」只在訊息放得進 caption（可就地編輯）、非查詢模式、
+  // 且 ≤10 筆時附上（callback_data 上限 64 bytes，label 過長就整組不加）
+  const kb = new InlineKeyboard();
+  const canAttachDone = !aiResult && msg.length <= 1024 && filtered.length <= 10;
+  if (canAttachDone) {
+    const enc = new TextEncoder();
+    const fits = filtered.every(t => enc.encode(`doneone|${t.id}|${start}|${end}|${label}`).length <= 64);
+    if (fits) {
+      for (let i = 0; i < filtered.length; i += 2) {
+        kb.text(`✅ ${i + 1}`, `doneone|${filtered[i].id}|${start}|${end}|${label}`);
+        if (filtered[i + 1]) kb.text(`✅ ${i + 2}`, `doneone|${filtered[i + 1].id}|${start}|${end}|${label}`);
+        kb.row();
+      }
     }
   }
-  await sendChunked(ctx, msg, {
-    parse_mode: "HTML",
-    reply_markup: new InlineKeyboard().text("🗑️ 管理喵", `mg|${start}|${end}`)
-  });
+  kb.text("🗑️ 管理喵", `mg|${start}|${end}`);
+
+  return { filtered, effTs, msg, png, kb };
+}
+
+// 標完成後就地更新清單訊息：照片訊息換圖+caption；文字訊息直接改字
+async function refreshListView(ctx, env, userId, label, start, end) {
+  const results = await getTodos(env, userId, 0);
+  const view = await buildListView(env, userId, label, start, end, null, results);
+  const isPhoto = !!ctx.callbackQuery?.message?.photo;
+  if (!view) {
+    // 該範圍已無待辦：照片訊息改 caption 收尾，文字訊息直接改字
+    if (isPhoto) {
+      await ctx.editMessageCaption("🎉 全部完成了喵～").catch(() => {});
+    } else {
+      await ctx.editMessageText("🎉 全部完成了喵～").catch(() => {});
+    }
+    return;
+  }
+  if (isPhoto) {
+    if (view.png) {
+      await ctx.editMessageMedia(
+        { type: "photo", media: new InputFile(view.png, "list.png"), caption: view.msg.slice(0, 1024), parse_mode: "HTML" },
+        { reply_markup: view.kb }
+      ).catch(() => {});
+    } else {
+      await ctx.editMessageCaption(view.msg.slice(0, 1024), { parse_mode: "HTML", reply_markup: view.kb }).catch(() => {});
+    }
+  } else {
+    await ctx.editMessageText(view.msg, { parse_mode: "HTML", reply_markup: view.kb }).catch(() => {});
+  }
 }
 
 // 文字訊息 >4096 會被 Telegram 拒收，切成多段送出
@@ -616,8 +664,8 @@ async function processScheduledReminders(bot, env) {
     // 0. 每日彙整（先於提醒：狀態制防漏發，提醒的錯誤不再拖垮當日報告）
     await processDailyReports(bot, env, nowTaipei);
 
-    // 1. 檢查提醒 (精確時間)
-    const { results: allReminders } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0 AND remind_at > 0 AND remind_at <= ?").bind(nowTs).all();
+    // 1. 檢查提醒 (精確時間)；ORDER BY 讓最舊的先敲（部署後累積的舊帳有清掃順序）
+    const { results: allReminders } = await env.DB.prepare("SELECT * FROM todos WHERE status = 0 AND remind_at > 0 AND remind_at <= ? ORDER BY remind_at ASC").bind(nowTs).all();
 
     // 過濾出符合當前星期幾的任務（對於週期性任務）
     const remindersToProcess = [];
@@ -633,23 +681,32 @@ async function processScheduledReminders(bot, env) {
       }
     }
 
-    for (const todo of remindersToProcess) {
+    // 每 tick 最多敲 10 筆：部署後逾期舊帳一次湧入時分批補敲，避免單次轟炸
+    for (const todo of remindersToProcess.slice(0, 10)) {
       // 全天任務夜間靜音：00:00-08:59 不敲鐘（無時刻任務的 remind_at 一律為當日 00:00，
       // 舊行為會在半夜 00:0x 轟一天 🔔）。改為 9 點後第一個 tick 發出，內容同時由早報呈現。
       if (todo.all_day && nowTaipei.getUTCHours() < 9) continue;
 
+      const isSingle = !todo.cron_rule;
+      // 單次任務附「做完了嗎」按鈕：✅ 標完成進歷史／還沒 = 侀眠到明天同一時刻
+      const remindKb = isSingle
+        ? new InlineKeyboard().text("✅ 做完了", `rdone|${todo.id}`).text("還沒", `rsnooze|${todo.id}`)
+        : undefined;
+
       try {
-        await sendBotMessageHtml(bot.api, todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${escapeHtml(todo.task)}`);
+        await sendBotMessageHtml(bot.api, todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${escapeHtml(todo.task)}`, remindKb ? { reply_markup: remindKb } : {});
       } catch (e) {
         // 單筆發送失敗：不記錄/不推進（下個 tick 自動重試），也不中斷整輪
         logSendError("提醒", `發送 todo#${todo.id}`, e);
         continue;
       }
 
-      if (!todo.cron_rule) {
-        // 單次任務 -> 記錄歷史 + 標記完成
+      if (isSingle) {
+        // 單次任務 -> 記錄歷史 + 改為「已提醒待確認」(status=2)：
+        // 等使用者按 ✅ 做完了（status=1 進歷史）或 還沒（status=0 並推遲一天）才了結，
+        // 不再自動標完成——任務一直沒回應就會隔天出現在早報「昨日以前未完成」區塊，有按鈕可清。
         await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(todo.user_id, todo.task, todo.remind_at).run();
-        await env.DB.prepare("UPDATE todos SET status = 1 WHERE id = ?").bind(todo.id).run();
+        await env.DB.prepare("UPDATE todos SET status = 2 WHERE id = ?").bind(todo.id).run();
       } else {
         // 循環任務 -> 記錄歷史 + 更新下次時間
         await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(todo.user_id, todo.task, todo.remind_at).run();
@@ -698,7 +755,7 @@ async function processDailyReports(bot, env, nowTaipei) {
 
   // 有未完成待辦的用戶（單人使用情境即本人）
   const { results: userRows } = await env.DB.prepare(
-    "SELECT DISTINCT user_id FROM todos WHERE status = 0"
+    "SELECT DISTINCT user_id FROM todos WHERE status IN (0, 2)"
   ).all();
   let anySuccess = userRows.length === 0; // 沒有對象也視為當日完成，避免整天重查
 
@@ -722,7 +779,7 @@ async function processDailyReports(bot, env, nowTaipei) {
       if (isMorning) {
         try {
           const { results } = await env.DB.prepare(
-            "SELECT * FROM todos WHERE user_id = ? AND status = 0 AND remind_at > 0 AND remind_at < ? AND (cron_rule IS NULL OR cron_rule = '' OR cron_rule = 'none' OR cron_rule = 'null') ORDER BY remind_at ASC LIMIT 20"
+            "SELECT * FROM todos WHERE user_id = ? AND status IN (0, 2) AND remind_at > 0 AND remind_at < ? AND (cron_rule IS NULL OR cron_rule = '' OR cron_rule = 'none' OR cron_rule = 'null') ORDER BY remind_at ASC LIMIT 20"
           ).bind(userId, timeRange.start).all();
           overdueRows = results || [];
         } catch (e) {
@@ -773,6 +830,12 @@ async function processDailyReports(bot, env, nowTaipei) {
           if (overdueRows.length > 10) msg += `…等共 ${overdueRows.length} 筆喵\n`;
         }
 
+        // 逾期任務一鍵掃掉：callback 時會重查「當下」的逾期單次任務（同早報定義）逐筆標完成
+        const reportKb = overdueRows.length > 0
+          ? new InlineKeyboard().text(`🧹 這些都完成了（${overdueRows.length} 筆）`, "odone|0")
+          : null;
+        const reportKbExtra = reportKb ? { reply_markup: reportKb } : {};
+
         // 產生圖片並發送（PNG 照片；失敗退回純文字）
         try {
           const reportType = isMorning ? 'morning' : 'evening';
@@ -797,16 +860,18 @@ async function processDailyReports(bot, env, nowTaipei) {
           if (png) {
             try {
               // caption 上限 1024，太長就只送圖，文字另外分批送（sendSchedulePhoto 內處理）
-              await sendSchedulePhoto(bot.api, userId, png, msg);
+              await sendSchedulePhoto(bot.api, userId, png, msg, reportKbExtra);
             } catch (sendErr) {
               logSendError("每日報告", "照片發送", sendErr);
-              for (const part of chunkText(msg, 4096)) {
-                await sendBotMessageHtml(bot.api, userId, part);
+              const parts = chunkText(msg, 4096);
+              for (let i = 0; i < parts.length; i++) {
+                await sendBotMessageHtml(bot.api, userId, parts[i], (i === parts.length - 1 && reportKb) ? { reply_markup: reportKb } : {});
               }
             }
           } else {
-            for (const part of chunkText(msg, 4096)) {
-              await sendBotMessageHtml(bot.api, userId, part);
+            const parts = chunkText(msg, 4096);
+            for (let i = 0; i < parts.length; i++) {
+              await sendBotMessageHtml(bot.api, userId, parts[i], (i === parts.length - 1 && reportKb) ? { reply_markup: reportKb } : {});
             }
           }
         } catch (imgErr) {
@@ -863,6 +928,7 @@ async function renderRecurringTasks(ctx, env, tasks) {
 
 export {
   renderList,
+  refreshListView,
   renderHistory,
   sendConfirmation,
   sendBatchConfirmation,

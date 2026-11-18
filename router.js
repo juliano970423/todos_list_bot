@@ -2,9 +2,9 @@
 import { Bot, InlineKeyboard } from "grammy";
 import * as chrono from "chrono-node";
 import { getTaskPrompt, getQueryPrompt, callAI, parseTimeLocally, parseQueryLocally, normalizeAIResult, looksLikeBatch } from "./ai.js";
-import { sendConfirmation, sendBatchConfirmation, decodeBatchPayload, renderList, renderHistory, renderRecurringTasks, escapeHtml, unescapeHtml, recurringMatchesRange } from "./task.js";
-import { addTodo, addTodosBatch, getTodos, deleteTodosByIds, getPendingDeleteIds, savePendingDeleteIds, clearPendingDelete } from "./db.js";
-import { TAIPEI_OFFSET, getTodayAndFutureRangeTaipei, getNowTaipei, localDateToUtcTs, formatShortDateSmart } from "./time.js";
+import { sendConfirmation, sendBatchConfirmation, decodeBatchPayload, renderList, refreshListView, renderHistory, renderRecurringTasks, escapeHtml, unescapeHtml, recurringMatchesRange } from "./task.js";
+import { addTodo, addTodosBatch, getTodos, deleteTodosByIds, getPendingDeleteIds, savePendingDeleteIds, clearPendingDelete, markTodosDone, snoozeTodo } from "./db.js";
+import { TAIPEI_OFFSET, getTodayAndFutureRangeTaipei, getTodayRangeTaipei, getNowTaipei, localDateToUtcTs, formatShortDateSmart } from "./time.js";
 
 // ============================================
 // 時間解析輔助函數
@@ -1024,9 +1024,9 @@ async function handleCallbackQuery(ctx, env) {
       }
       kb.text(`⬜️ ${displayText}`, `tog_f|${t.id}|${start || 0}|${end || 0}`).row();
     });
-    kb.text("❌ 關閉", "cancel").text("🗑️ 刪除選取", `conf_del_f|${start || 0}|${end || 0}`).row();
+    kb.text("❌ 關閉", "cancel").text("🗑️ 刪除選取", `conf_del_f|${start || 0}|${end || 0}`).text("✅ 標完成", `conf_done_f|${start || 0}|${end || 0}`).row();
 
-    await ctx.editMessageText("🗑️ <b>管理喵～</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
+    await ctx.editMessageText("🗑️ <b>管理喵～</b>\n請勾選要處理的任務：", { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 範圍管理模式的勾選邏輯
@@ -1066,9 +1066,9 @@ async function handleCallbackQuery(ctx, env) {
       }
       kb.text(`${sSet.has(t.id.toString())?"✅":"⬜️"} ${displayText}`, `tog_f|${t.id}|${start || 0}|${end || 0}`).row();
     });
-    kb.text("❌ 關閉", "cancel").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del_f|${start || 0}|${end || 0}`).row();
+    kb.text("❌ 關閉", "cancel").text(`🗑️ 確認刪除 (${sSet.size})`, `conf_del_f|${start || 0}|${end || 0}`).text(`✅ 標完成 (${sSet.size})`, `conf_done_f|${start || 0}|${end || 0}`).row();
 
-    await ctx.editMessageText("🗑️ <b>管理喵～</b>\n請勾選要刪除的任務：", { parse_mode: "HTML", reply_markup: kb });
+    await ctx.editMessageText("🗑️ <b>管理喵～</b>\n請勾選要處理的任務：", { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 範圍管理模式的確認刪除
@@ -1082,6 +1082,54 @@ async function handleCallbackQuery(ctx, env) {
     await deleteTodosByIds(env, ids, userId);
     await clearPendingDelete(env, userId).catch(() => {});
     await ctx.editMessageText(`🗑️ 喵～已刪除 ${ids.length} 個任務！`);
+  }
+
+  // 管理模式勾選 -> 標完成（進 /history，不刪資料）
+  if (data.startsWith("conf_done_f|")) {
+    const ids = await getPendingDeleteIds(env, userId);
+    if (!ids.length) return answerCb("喵～未選擇任何任務");
+    await markTodosDone(env, ids, userId);
+    await clearPendingDelete(env, userId).catch(() => {});
+    await ctx.editMessageText(`✅ 已標完成 ${ids.length} 筆喵！/history 裡找得到～`);
+  }
+
+  // 提醒訊息「✅ 做完了」：標完成（進 /history）並移除按鈕
+  if (data.startsWith("rdone|")) {
+    const tid = data.split("|")[1];
+    await markTodosDone(env, [tid], userId);
+    await ctx.editMessageReplyMarkup().catch(() => {});
+    return answerCb("✅ 已標完成喵！");
+  }
+
+  // 提醒訊息「還沒」：侀眠，明天同一時刻再提醒（全日任務落明天 00:00 -> 9 點後照樣靜音規則）
+  if (data.startsWith("rsnooze|")) {
+    const tid = data.split("|")[1];
+    await snoozeTodo(env, tid, userId);
+    await ctx.editMessageReplyMarkup().catch(() => {});
+    return answerCb("⏰ 好～明天這時候再提醒你喵");
+  }
+
+  // 早報「昨日以前未完成」一鍵掃掉：重查「當下」的逾期單次任務（同早報定義）逐筆標完成
+  if (data.startsWith("odone|")) {
+    const todayStart = getTodayRangeTaipei().start;
+    const { results: odRows } = await env.DB.prepare(
+      "SELECT id FROM todos WHERE user_id = ? AND status IN (0, 2) AND remind_at > 0 AND remind_at < ? AND (cron_rule IS NULL OR cron_rule = '' OR cron_rule = 'none' OR cron_rule = 'null') ORDER BY remind_at ASC LIMIT 20"
+    ).bind(userId, todayStart).all();
+    if (odRows.length) await markTodosDone(env, odRows.map(r => r.id), userId);
+    await ctx.editMessageReplyMarkup().catch(() => {});
+    return answerCb(odRows.length ? `🧹 已把 ${odRows.length} 筆標完成喵！` : "沒有逾期的了喵");
+  }
+
+  // /list 每筆任務「✅ N」：標完成並就地更新清單（換圖+改 caption，不重發新訊息）
+  if (data.startsWith("doneone|")) {
+    const parts = data.split("|");
+    const tid = parts[1];
+    const start = parseInt(parts[2]) || null;
+    const end = parseInt(parts[3]) || null;
+    const label = parts[4] || "任務清單";
+    await markTodosDone(env, [tid], userId);
+    answerCb("✅ 已標完成喵！");
+    await refreshListView(ctx, env, userId, label, start, end);
   }
 
   // 管理模式 - 主選單（全局）

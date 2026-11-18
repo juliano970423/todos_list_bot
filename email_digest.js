@@ -161,7 +161,7 @@ export async function buildDigestItems(env, mails, aiDigest, redactor, nowTs) {
   let existing = [];
   try {
     const { results } = await env.DB.prepare(
-      "SELECT task, remind_at FROM todos WHERE status = 0 AND remind_at > 0 ORDER BY remind_at DESC LIMIT 500"
+      "SELECT task, remind_at FROM todos WHERE status IN (0, 2) AND remind_at > 0 ORDER BY remind_at DESC LIMIT 500"
     ).all();
     existing = results || [];
   } catch {}

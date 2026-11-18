@@ -146,16 +146,21 @@ async function addTodosBatch(env, userId, items) {
 
 // 獲取待辦清單
 async function getTodos(env, userId, status = 0, limit = 200) {
-  const { results } = await env.DB
-    .prepare("SELECT * FROM todos WHERE user_id = ? AND status = ? LIMIT ?")
-    .bind(userId, status, limit)
-    .all();
+  // status 0 = 未完成（含 2「已提醒待確認」）：清單/管理/報告一律視為活躍任務；
+  // status 1 = 已完成（歷史）。提醒觸發查詢另行寫死 status=0（已提醒過的不重敲）。
+  const sql = status === 0
+    ? "SELECT * FROM todos WHERE user_id = ? AND status IN (0, 2) LIMIT ?"
+    : "SELECT * FROM todos WHERE user_id = ? AND status = ? LIMIT ?";
+  const { results } = await env.DB.prepare(sql).bind(...(status === 0 ? [userId, limit] : [userId, status, limit])).all();
   return results;
 }
 
 // 獲取指定時間範圍內的待辦
 async function getTodosByTimeRange(env, userId, startTs, endTs, status = 0) {
-  const { results } = await env.DB.prepare("SELECT * FROM todos WHERE user_id = ? AND status = ? AND remind_at BETWEEN ? AND ?").bind(userId, status, startTs, endTs).all();
+  const sql = status === 0
+    ? "SELECT * FROM todos WHERE user_id = ? AND status IN (0, 2) AND remind_at BETWEEN ? AND ?"
+    : "SELECT * FROM todos WHERE user_id = ? AND status = ? AND remind_at BETWEEN ? AND ?";
+  const { results } = await env.DB.prepare(sql).bind(...(status === 0 ? [userId, startTs, endTs] : [userId, status, startTs, endTs])).all();
   return results;
 }
 
@@ -210,6 +215,21 @@ async function clearPendingDelete(env, userId) {
   } catch { /* 初始化前的清理失敗不影響流程 */ }
 }
 
+// 標完成（批次、限本人）：status 2（已提醒待確認）或 0 -> 1（進 /history）
+async function markTodosDone(env, ids, userId) {
+  let n = 0;
+  for (const id of ids) {
+    await env.DB.prepare("UPDATE todos SET status = 1 WHERE id = ? AND user_id = ? AND status IN (0, 2)").bind(id, String(userId)).run();
+    n += 1;
+  }
+  return n;
+}
+
+// 「還沒」= 侀眠：推到明天同一時刻再提醒（status 回 0；全日任務落明天 00:00，夜間靜音規則照樣適用）
+async function snoozeTodo(env, todoId, userId) {
+  await env.DB.prepare("UPDATE todos SET status = 0, remind_at = remind_at + 86400 WHERE id = ? AND user_id = ? AND status = 2").bind(todoId, String(userId)).run();
+}
+
 // 添加歷史記錄
 async function addHistory(env, userId, task, remindAt) {
   await env.DB.prepare("INSERT INTO todos (user_id, task, remind_at, status) VALUES (?, ?, ?, 1)").bind(userId, task, remindAt).run();
@@ -222,6 +242,8 @@ export {
   getTodos,
   getTodosByTimeRange,
   updateTodoStatus,
+  markTodosDone,
+  snoozeTodo,
   deleteTodosByIds,
   deleteTodosByStatus,
   updateCronTodoNextTime,
