@@ -116,15 +116,26 @@ async function renderList(ctx, env, label, startTs = null, endTs = null, aiResul
 
   const view = await buildListView(env, userId, label, startTs, endTs, aiResult, results);
   if (!view) return ctx.reply(`😿 喵～${escapeHtml(label)} 沒有待辦事項呢～`);
+
+  // 1) 照片訊息：純圖 + 短標題 caption，不放任何按鈕——
+  //    按鈕掛在照片上只能用 editMessageMedia/caption 編輯，實測不可靠
+  //    （「管理喵/✅ 按了沒反應」的根因）。改成照片(純圖) + 文字清單(帶按鈕)兩則。
+  let photoMsgId = null;
   if (view.png) {
     try {
-      await replyWithSchedulePhoto(ctx, view.png, view.msg, { reply_markup: view.kb });
-      return;
+      const sent = await ctx.replyWithPhoto(new InputFile(view.png, "schedule.png"), {
+        caption: view.photoCaption,
+        parse_mode: "HTML",
+      });
+      photoMsgId = sent?.message_id ?? null;
     } catch (e) {
       logSendError("renderList", "照片發送", e);
     }
   }
-  await sendChunked(ctx, view.msg, { parse_mode: "HTML", reply_markup: view.kb });
+
+  // 2) 文字清單：✅ N + 管理喵按鈕掛這則（editMessageText 可靠）；callback 帶照片 id 供就地換圖
+  const kb = buildListKb(view.filtered, view.start, view.end, label, photoMsgId, view.canDone);
+  await sendChunked(ctx, view.msg, { parse_mode: "HTML", reply_markup: kb });
 }
 
 // --- 4b. 清單視圖建構（發送與「標完成後就地更新」共用） ---
@@ -229,51 +240,81 @@ async function buildListView(env, userId, label, start, end, aiResult, results) 
     logSendError("renderList", "PNG 產生", e);
   }
 
-  // 按鈕：管理喵一律有；每筆「✅ N」只在訊息放得進 caption（可就地編輯）、非查詢模式、
-  // 且 ≤10 筆時附上（callback_data 上限 64 bytes，label 過長就整組不加）
+  // 照片訊息用短 caption（完整清單文字在另一則文字訊息上，按鈕也掛在那裡）
+  let photoCaption = `📋 <b>${escapeHtml(label)} 喵～</b>`;
+  if (dateRange.length) {
+    photoCaption += `\n🗓 ${escapeHtml(dateRange.join(" ~ "))}`;
+  }
+
+  return {
+    filtered, effTs, msg, png, photoCaption,
+    start, end,
+    canDone: !aiResult && msg.length <= 4000, // 文字訊息上限 4096，留餘裕
+  };
+}
+
+// 清單按鈕：管理喵一律有；每筆「✅ N」只在非查詢模式、文字放得下、≤10 筆時附上。
+// callback 帶 photoMsgId：標完成後把上方照片就地換新圖（best-effort，失敗不影響操作）。
+// callback_data 上限 64 bytes，放不下就整組不加。
+function buildListKb(filtered, start, end, label, photoMsgId, canDone) {
   const kb = new InlineKeyboard();
-  const canAttachDone = !aiResult && msg.length <= 1024 && filtered.length <= 10;
-  if (canAttachDone) {
+  const pid = photoMsgId || 0;
+  if (canDone && filtered.length <= 10) {
     const enc = new TextEncoder();
-    const fits = filtered.every(t => enc.encode(`doneone|${t.id}|${start}|${end}|${label}`).length <= 64);
+    const fits = filtered.every(t => enc.encode(`doneone|${t.id}|${start}|${end}|${label}|${pid}`).length <= 64);
     if (fits) {
       for (let i = 0; i < filtered.length; i += 2) {
-        kb.text(`✅ ${i + 1}`, `doneone|${filtered[i].id}|${start}|${end}|${label}`);
-        if (filtered[i + 1]) kb.text(`✅ ${i + 2}`, `doneone|${filtered[i + 1].id}|${start}|${end}|${label}`);
+        kb.text(`✅ ${i + 1}`, `doneone|${filtered[i].id}|${start}|${end}|${label}|${pid}`);
+        if (filtered[i + 1]) kb.text(`✅ ${i + 2}`, `doneone|${filtered[i + 1].id}|${start}|${end}|${label}|${pid}`);
         kb.row();
       }
     }
   }
   kb.text("🗑️ 管理喵", `mg|${start}|${end}`);
-
-  return { filtered, effTs, msg, png, kb };
+  return kb;
 }
 
-// 標完成後就地更新清單訊息：照片訊息換圖+caption；文字訊息直接改字
-async function refreshListView(ctx, env, userId, label, start, end) {
+// 標完成後就地更新清單：
+// 新版版面是「照片(純圖無按鈕) + 文字清單(帶按鈕)」兩則，callback 來自文字訊息，
+// photoMsgId 由 callback_data 帶入，標完成後把照片 best-effort 換成新圖。
+// 舊版單則照片訊息上的按鈕也相容：就地編輯不可靠，改發一則新的文字清單。
+async function refreshListView(ctx, env, userId, label, start, end, photoMsgId = null) {
   const results = await getTodos(env, userId, 0);
   const view = await buildListView(env, userId, label, start, end, null, results);
-  const isPhoto = !!ctx.callbackQuery?.message?.photo;
+  const isPhoto = !!ctx.callbackQuery?.message?.photo; // 舊版單則照片訊息上的按鈕
   if (!view) {
-    // 該範圍已無待辦：照片訊息改 caption 收尾，文字訊息直接改字
-    if (isPhoto) {
-      await ctx.editMessageCaption("🎉 全部完成了喵～").catch(() => {});
-    } else {
-      await ctx.editMessageText("🎉 全部完成了喵～").catch(() => {});
+    // 該範圍已無待辦：就地收尾
+    try {
+      if (isPhoto) await ctx.editMessageCaption("🎉 全部完成了喵～");
+      else await ctx.editMessageText("🎉 全部完成了喵～");
+    } catch (e) {
+      await ctx.reply("🎉 全部完成了喵～").catch(() => {});
+    }
+    if (photoMsgId) {
+      await ctx.api.editMessageCaption(ctx.chat.id, photoMsgId, { caption: "🎉 全部完成了喵～" }).catch((e) => {
+        console.error(`[refreshListView] 照片caption更新失敗(不影響操作): ${e?.message || e}`);
+      });
     }
     return;
   }
+  const kb = buildListKb(view.filtered, view.start, view.end, label, photoMsgId, view.canDone);
   if (isPhoto) {
-    if (view.png) {
-      await ctx.editMessageMedia(
-        { type: "photo", media: new InputFile(view.png, "list.png"), caption: view.msg.slice(0, 1024), parse_mode: "HTML" },
-        { reply_markup: view.kb }
-      ).catch(() => {});
-    } else {
-      await ctx.editMessageCaption(view.msg.slice(0, 1024), { parse_mode: "HTML", reply_markup: view.kb }).catch(() => {});
-    }
-  } else {
-    await ctx.editMessageText(view.msg, { parse_mode: "HTML", reply_markup: view.kb }).catch(() => {});
+    // 舊版照片訊息：改發一則新文字清單（照片留著不再更新）
+    await ctx.reply(view.msg, { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
+    return;
+  }
+  try {
+    await ctx.editMessageText(view.msg, { parse_mode: "HTML", reply_markup: kb });
+  } catch (e) {
+    // 就地編輯失敗（訊息太舊/解析錯誤）：退回發新訊息，確保使用者看得到最新狀態
+    logSendError("refreshListView", "就地編輯", e);
+    await ctx.reply(view.msg, { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
+  }
+  if (photoMsgId && view.png) {
+    // 照片換新圖（best-effort：失敗只是圖舊了，清單操作不受影響）
+    await ctx.api.editMessageMedia(ctx.chat.id, photoMsgId, { type: "photo", media: new InputFile(view.png, "list.png") }).catch((e) => {
+      console.error(`[refreshListView] 照片更新失敗(不影響操作): ${e?.message || e}`);
+    });
   }
 }
 

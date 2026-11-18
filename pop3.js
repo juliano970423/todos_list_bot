@@ -60,15 +60,16 @@ class TcpLine {
   }
 }
 
-// 取得新郵件清單（快照式：以 UIDL 增量比對 + 回傳 TOP 內容和解碼結果）
+// 取得新郵件清單（快照式：以 UIDL 增量比對 + 回傳信件解碼結果）
 // opts:
 //   knownUids: Set<string>  已處理過的 UIDL（增量判斷）
 //   sinceTs: number|null    只保留 Date >= sinceTs 的信（首次回看用）
 //   maxCount: number        最多回傳幾封（最新的優先）
 //   topLines: number        每封 TOP 抓幾行內容
-// 回傳 {ok, count, mails:[{uid,n,subject,from,date,ts,snippet}], stage?, error?, steps}
+//   full: boolean           true = 整信抓回（RETR），摘要品質依賴完整內文時用
+// 回傳 {ok, count, mails:[{uid,n,subject,from,date,ts,text}], stage?, error?, steps}
 export async function fetchMail(inbox, opts = {}) {
-  const { knownUids = new Set(), sinceTs = null, maxCount = 25, topLines = 120 } = opts;
+  const { knownUids = new Set(), sinceTs = null, maxCount = 25, topLines = 120, full = false } = opts;
   const host = inbox.host, port = inbox.port || 995, mode = inbox.mode || "tls";
   const steps = [];
   let p = null;
@@ -116,14 +117,18 @@ export async function fetchMail(inbox, opts = {}) {
     const mails = [];
     for (const item of news.slice(-maxCount * 2)) {
       let raw;
-      try { const r = await p.cmdMulti(`TOP ${item.n} ${topLines}`); raw = r.body; }
+      try {
+        // full=true 時整信抓回（RETR）；否則 TOP 省頻寬
+        const r = full ? await p.cmdMulti(`RETR ${item.n}`) : await p.cmdMulti(`TOP ${item.n} ${topLines}`);
+        raw = r.body;
+      }
       catch {
         // TOP 不支援時退回 RETR（可能抓很多，限筆）
         try { const r = await p.cmdMulti(`RETR ${item.n}`); raw = r.body; }
         catch (e) { steps.push(["fetch_fail", `${item.n}: ${String(e).slice(0, 60)}`]); continue; }
       }
       try {
-        const m = decodeMail(raw);
+        const m = decodeMail(raw, full ? 8000 : 1600);
         mails.push({ uid: item.uid, n: item.n, ...m });
       } catch (e) { steps.push(["decode_fail", `${item.n}: ${String(e).slice(0, 60)}`]); }
     }
@@ -142,7 +147,7 @@ export async function fetchMail(inbox, opts = {}) {
 
 // ---------- MIME 解碼 ----------
 
-export function decodeMail(raw) {
+export function decodeMail(raw, textCap = 1600) {
   const sep = findHeaderEnd(raw);
   const headRaw = raw.slice(0, sep);
   let body = raw.slice(sep);
@@ -164,9 +169,9 @@ export function decodeMail(raw) {
   try { const d = new Date(dateStr); if (!isNaN(d.getTime())) ts = Math.floor(d.getTime() / 1000); } catch {}
   if (!ts) ts = Math.floor(Date.now() / 1000);
 
-  // 對純文字內容做深度去噪：重複空行、腳註
-  const snippet = cleanSnippet(text);
-  return { subject, from, to, date: dateStr, ts, snippet };
+  // 對純文字內容做深度去噪：重複空行、腳註；textCap 控制保留長度（摘要用全文時給大值）
+  const cleaned = cleanSnippet(text, textCap);
+  return { subject, from, to, date: dateStr, ts, text: cleaned };
 }
 
 function findHeaderEnd(raw) {
@@ -334,7 +339,7 @@ function htmlToText(h) {
     .trim();
 }
 
-function cleanSnippet(t) {
+function cleanSnippet(t, maxLen = 1600) {
   return String(t || "")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/g, " ")
@@ -344,7 +349,7 @@ function cleanSnippet(t) {
     .join("\n")
     .replace(/\n{2,}/g, "\n")
     .trim()
-    .slice(0, 1600);
+    .slice(0, maxLen);
 }
 
 // ---------- AI 去識別化 ----------

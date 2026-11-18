@@ -14,7 +14,8 @@ import { parseAITimeExpression } from "./router.js";
 
 const MAX_DIGEST_MAILS = 25;
 const LOOKBACK_HOURS_FIRST = 48;
-const MAX_SNIPPET = 700;
+const MAX_MAIL_TEXT = 8000;   // 送 AI 的單信內文上限（抓整信，不再只給片段）
+const AI_PARALLEL = 5;        // 一信一呼叫的並行批次大小
 const MAX_MSG_CHARS = 3860;
 
 const CATEGORY_EMOJI = {
@@ -89,52 +90,50 @@ export function getMailboxes(env, fallbackChatId = null) {
   return list.filter((m) => m.enabled && m.protocol === "pop3");
 }
 
-// ============== AI 摘要 prompt ==============
+// ============== AI 摘要 prompt（一信一呼叫） ==============
 
-function buildPrompt(mails, nowStr) {
-  const items = mails.map((m, i) => ({
-    id: String(i + 1).padStart(3, "0"),
-    from: (m.from || "").slice(0, 80),
-    subject: (m.subject || "").slice(0, 160),
-    sent: m.sent || "",
-    snippet: (m.snippet || "").slice(0, MAX_SNIPPET),
-  }));
+// 主旨清理：展開折行、壓縮空白、去 [Image N] 佔位
+//（信件 header 折行常把單字切斷，如 "Progra\r\nmming" → 原樣顯示變 "Progra mming"）
+export function cleanSubject(s) {
+  return String(s || "")
+    .replace(/\[Image\s*\d+\]/gi, "")
+    .replace(/\r?\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function buildMailPrompt(mail, idx, total, nowStr) {
   return `
-# SYSTEM ROLE: Email classification & digest assistant (Traditional Chinese output)
+# SYSTEM ROLE: Email digest assistant (Traditional Chinese output)
 # CURRENT TIME (Taipei, UTC+8): ${nowStr}
+# 你這次只處理第 ${idx}/${total} 封信，專注把這封讀完整。
 
-# OBJECTIVE: 為每一封信產生分類/摘要/期限/是否可直接轉為待辦。輸出讓學生一分鐘看完就知道今天要做什麼。
+# 信件內容:
+寄件者: ${mail.from}
+主旨: ${mail.subject}
+時間: ${mail.sent}
+內文:
+"""
+${mail.text}
+"""
 
-# 信件內容 mailList (JSON):
-${JSON.stringify(items, null, 1)}
+# 輸出欄位:
+1. category: 只能選一個："課程", "作業/考試", "行政/系統", "社團/活動", "財務/繳費", "其他"
+2. title: 繁中短標題 ≤16 字（例：「程設作業8發布」「註冊費繳納通知」），不要照抄英文主旨
+3. summary: 繁中 1 句 ≤40 字。把內文裡所有「截止/期限/due/以前/前繳交/必須於…前/last date」的日期時間逐段掃過，
+   有期限就必須明確寫出（例：「11/24(二) 08:00 前繳交程式作業」）。學生只看摘要就要知道幾號前要做完。不得發明信中沒有的資訊。
+4. should_todo: 布林值。
+   - true = 「待辦型」：不需要報名/出席，只要在某時間前「主動完成某動作」（繳作業/報告、繳費、回填表單、領文件、體檢…）。
+   - false = 「報名型/參考型」：要先報名才生效的活動講座、純宣導、純參考公告。
+   判斷不確定 → false（寧可只摘要不自動加待辦）。
+5. deadline: 要主動完成的期限。should_todo=true 時原則上必填——把內文裡出現的每一個日期時間都檢查一遍，
+   取與「要完成的動作」綁定的那個（多個時取最終截止）。格式例："2026-11-24 08:00"、"Friday 23:59"、"tomorrow"。
+   只有整封信真的完全找不到任何期限資訊才允許 null，此時 summary 結尾寫「期限未見於文字內容（可能在圖片或附件）」。
+   禁止捏造：期限必須真的出現在信件內容中。
+6. task_hint: 只在 should_todo=true 且能一句話明確敘述時寫（繁中、≤25字、動賓結構、不含時間詞，例："繳交程式作業"）。否則 null。
 
-# 針對每封信輸出 5 欄 (mailList 的 id 要原樣保留):
-1. **category**: 只能選一個分類："課程", "作業/考試", "行政/系統", "社團/活動", "財務/繳費", "其他"
-2. **summary**: 繁體中文 1 句，≤ 40 字。講出最關鍵的資訊（課名/日期/繳費金額/地點等）。不要發明信件中沒有的資訊。
-   信中有截止日/期限時，summary 一定要明確寫出該日期時間（例：11/25 23:59 前繳交程式作業）。學生只看摘要就要知道幾號前要做完。
-3. **should_todo**: 布林值 (true/false)。兩類信件要區分:
-   - true = 「待辦型」：收件人「不用另外報名/不出席」、只需要在某時間前「主動完成某動作」的信（例：繳交作業/報告、繳註冊費學費、回填表單/文件、領取文件辦理、服裝儀容檢查、書面通知要修正）。
-   - false = 「報名型/參考型」：要「先報名才生效」的活動講座營隊（最後去不去由自己決定的）、純宣導通知、純參考公告。
-   判斷不確定 → false（寧可只摘要不加入待辦）。
-4. **deadline**: 作業/繳費/繳交/回填/領取等「要主動完成的期限」。should_todo=true 時原則上必填——信中任何期限資訊都要盡力解出（寧可粗略也不要 null）：
-   - 相對:"tomorrow", "in 2 days", "next Monday"
-   - 星期: "Friday" 或 "Friday 23:59"
-   - 明確日期: "January 15" / "2027-01-15" / "2027-01-15 23:59"
-   - 只有當信中真的完全找不到任何期限資訊時才允許 null，此時 summary 要寫明「未註明期限」。
-   - 禁止捏造：期限必須真的出現在信件內容中（含 snippet 中的相對描述，如「本週五前」「下次上課時」）。
-5. **task_hint**: 只在 should_todo=true 且能一句話明確敘述時寫（繁中、≤25字、動賓結構、不含時間詞，例："繳交資演習題第1回"、"繳納註冊費"）。報名型/無明確動作 → null。
-
-# 規則
-- 全部繁體中文輸出（deadline/格式欄保留英文）。
-- 一封信一條；id 與 mailList 對不上時仍然保留原樣 id。
-- snippet 通常是主旨+前幾行的純文字化碎訊息，從中抓核心資訊即可。
-
-# OUTPUT FORMAT (JSON Only):
-{
-  "digest": [
-    {"id":"001","category":"作業/考試","summary":"...","should_todo":true,"deadline":"Friday 23:59" or null,"task_hint":"..." or null}
-  ]
-}`;
+# OUTPUT FORMAT (JSON Only，不要 markdown 圍籬):
+{"category":"作業/考試","title":"...","summary":"...","should_todo":true,"deadline":"2026-11-24 08:00","task_hint":"繳交程式作業"}`;
 }
 
 // deadline 文字 → { ts, allDay }
@@ -186,6 +185,7 @@ export async function buildDigestItems(env, mails, aiDigest, redactor, nowTs) {
     const item = {
       mailId: String(mailIdx + 1).padStart(3, "0"),
       category: CATEGORY_EMOJI[row.category] ? String(row.category) : "其他",
+      title: redactor(String(row.title || "")).slice(0, 24),
       summary: summary || "(無摘要)",
       subject: mail.subject || "",
       from: mail.from || "",
@@ -239,7 +239,8 @@ export function renderDigestMessage(mailboxName, todayStr, items) {
       msg += `\n${emoji} <b>${esc(it.category)} (${catTotal.get(it.category)})</b>\n`;
     }
     n++;
-      msg += `${n}. <b>${esc(it.subject) || "(無主旨)"}</b>\n`;
+      const title = it.title || cleanSubject(it.subject) || "(無主旨)";
+      msg += `${n}. <b>${esc(title)}</b>\n`;
       msg += `   ${esc(it.summary)}\n`;
       msg += `   ✉ ${esc(it.from || "")}${it.sent ? " · " + esc(it.sent) : ""}\n`;
       if (it.valid && it.remindAt > 0 && it.added !== false) {
@@ -297,7 +298,7 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
     return { key: mb.key, name: mb.name, skipped: true, count: 0 };
   }
 
-  const res = await fetchMail(mb, { knownUids, sinceTs, maxCount: mb.maxMails || MAX_DIGEST_MAILS, topLines: 120 });
+  const res = await fetchMail(mb, { knownUids, sinceTs, maxCount: mb.maxMails || MAX_DIGEST_MAILS, full: true });
   if (!res.ok) {
     const stageMsg = STAGE_LABEL[res.stage] || res.stage || "未知錯誤";
     if (target && api) {
@@ -322,26 +323,35 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
 
   const aiMails = res.mails.map((m) => ({
     from: redactor(m.from),
-    subject: redactor(m.subject),
+    subject: redactor(cleanSubject(m.subject)),
     sent: m.ts ? new Date(m.ts * 1000).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).replace(/\//g, "-") : "",
-    snippet: redactor(m.snippet).slice(0, MAX_SNIPPET),
+    text: redactor(m.text || "").slice(0, MAX_MAIL_TEXT),
   }));
 
   const nowStr = new Date(nowTs * 1000).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).replace(/\//g, "-");
 
-  let aiJson = null;
-  try {
-    const ai = await callAI(env, buildPrompt(aiMails, nowStr), { model: mb.emailModel });
-    aiJson = ai.json && Array.isArray(ai.json.digest) ? ai.json.digest : null;
-  } catch (e) {
-    console.error(`[email_digest][${mb.key}] AI 失敗:`, e.message);
-    if (target && api) {
-      try { await api.sendMessage(target, `⚠️ <b>${esc(mb.name)}</b> AI 摘要失敗喵：<code>${esc(String(e.message || "")).slice(0, 160)}</code>`, { parse_mode: "HTML" }); } catch {}
-    }
-    return { key: mb.key, name: mb.name, skipped: false, ok: false, stage: "ai", error: String(e.message || "") };
+  // 一信一呼叫（AI_PARALLEL 封一批並行）：每封信拿到完整內文與完整注意力，
+  // 單封失敗只影響該封（標記 AI 摘要失敗），不再像舊版 25 封擠一個 prompt 集體降質
+  const rows = new Array(aiMails.length).fill(null);
+  for (let i = 0; i < aiMails.length; i += AI_PARALLEL) {
+    const chunk = aiMails.slice(i, i + AI_PARALLEL);
+    const settled = await Promise.allSettled(chunk.map((m, j) =>
+      callAI(env, buildMailPrompt(m, i + j + 1, aiMails.length, nowStr), { model: mb.emailModel })
+    ));
+    settled.forEach((r, j) => {
+      const idx = i + j;
+      if (r.status === "fulfilled" && r.value?.json && typeof r.value.json === "object") {
+        rows[idx] = { id: String(idx + 1).padStart(3, "0"), ...r.value.json };
+      } else {
+        const reason = r.status === "rejected" ? (r.reason?.message || String(r.reason || "")) : "無 JSON 回覆";
+        console.error(`[email_digest][${mb.key}] 信件#${idx + 1} AI 失敗: ${reason}`);
+      }
+    });
   }
+  const aiJson = rows.filter(Boolean);
+  const failedCount = rows.length - aiJson.length;
 
-  const items = aiJson ? await buildDigestItems(env, res.mails, aiJson, redactor, nowTs) : [];
+  const items = aiJson.length ? await buildDigestItems(env, res.mails, aiJson, redactor, nowTs) : [];
 
   // 先把待辦寫進 DB，再渲染訊息 — 這樣訊息裡的 ✅ 才反映真實結果
   const validItems = items.filter((i) => i.valid);
@@ -361,6 +371,7 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
   let msg;
   if (items.length) {
     msg = renderDigestMessage(mb.name, today, items);
+    if (failedCount > 0) msg += `\n\n⚠️ ${failedCount} 封 AI 摘要失敗（未列入清單）`;
     if (validItems.length && addErrMsg === null) {
       msg += `\n\n✅ <b>已自動加入 ${validItems.length} 筆待辦喵～</b>（之後可用 /list 檢視，🗑️ 認定誤植可刪除）`;
     } else if (addErrMsg !== null) {
@@ -368,7 +379,7 @@ async function processOneMailbox(api, env, mb, { force = false, log = () => {} }
     }
   } else {
     msg = `📬 <b>${esc(mb.name)} ・ Email 摘要</b>\n🗓 ${esc(today)} ・ ${res.mails.length} 封 (AI 摘要無回覆，附原始清單)\n\n` +
-      res.mails.map((m, i) => `${i + 1}. ${esc(m.subject) || "(無主旨)"}\n   ✉ ${esc(m.from)}`).join("\n");
+      res.mails.map((m, i) => `${i + 1}. ${esc(cleanSubject(m.subject)) || "(無主旨)"}\n   ✉ ${esc(m.from)}`).join("\n");
   }
 
   if (target && api) {
@@ -480,4 +491,42 @@ export async function handleEmailStatus(ctx, env) {
   }
   const redNote = env.REDACT_PATTERNS ? `有設定` : "使用內建預設";
   return ctx.reply(`📬 <b>Email 摘要狀態喵～</b>\n\n${lines.join("\n")}\n\n🗄 設定來源：${env.EMAIL_ACCOUNTS ? "<code>EMAIL_ACCOUNTS</code> (JSON)" : "扁平設定 (POP3_*)"}\n🤖 摘要模型：${esc(mbs[0].emailModel)}\n🈸 去識別化：${redNote}`, { parse_mode: "HTML" });
+}
+
+// /email_raw 診斷：把 AI 實際吃到的主旨+內文原樣貼出來（不寫狀態、不影響 processed UIDs）
+export async function handleEmailRaw(ctx, env) {
+  const mbs = getMailboxes(env, String(ctx.chat.id));
+  if (!mbs.length) {
+    return ctx.reply("📭 喵～還沒設定信箱，設定方式見 /help 的「信箱摘要」段落。");
+  }
+  const mb = mbs[0];
+  const wait = await ctx.reply(`🔍 <b>${esc(mb.name)}</b> 抓最近 5 封信，看 AI 實際收到的內容…`, { parse_mode: "HTML" });
+  try {
+    const res = await fetchMail(mb, { knownUids: new Set(), maxCount: 5, full: true });
+    if (!res.ok) {
+      const t = `❌ 抓信失敗喵：${esc(String(res.error || "")).slice(0, 280)}`;
+      await ctx.api.editMessageText(ctx.chat.id, wait.message_id, t).catch(() => {});
+      return;
+    }
+    if (!res.mails.length) {
+      await ctx.api.editMessageText(ctx.chat.id, wait.message_id, "📭 信箱裡沒有信喵").catch(() => {});
+      return;
+    }
+    for (let i = 0; i < res.mails.length; i++) {
+      const m = res.mails[i];
+      const body = String(m.text || "").slice(0, 900);
+      const total = String(m.text || "").length;
+      const msg = `📥 <b>信件 ${i + 1}/${res.mails.length}</b>（AI 實際輸入，去噪後 ${total} 字）\n` +
+        `主旨：${esc(cleanSubject(m.subject)) || "(無主旨)"}\n寄件：${esc(m.from)}\n時間：${esc(m.date || "")}\n` +
+        `─────────────\n<code>${esc(body) || "(空的！這就是摘要抓不到資訊的原因)"}</code>`;
+      try {
+        await ctx.reply(msg, { parse_mode: "HTML" });
+      } catch {
+        await ctx.reply(`信件 ${i + 1}（純文字）\n主旨：${cleanSubject(m.subject)}\n\n${body}`).catch(() => {});
+      }
+    }
+    try { await ctx.api.deleteMessage(ctx.chat.id, wait.message_id); } catch {}
+  } catch (e) {
+    await ctx.api.editMessageText(ctx.chat.id, wait.message_id, `❌ 診斷失敗：${esc(String(e?.message || e)).slice(0, 200)}`).catch(() => {});
+  }
 }

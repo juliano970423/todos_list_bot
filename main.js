@@ -2,7 +2,7 @@ import { Bot, InlineKeyboard } from "grammy";
 import { initDatabase } from "./db.js";
 import { handleMessage, handleCallbackQuery } from "./router.js";
 import { processScheduledReminders } from "./task.js";
-import { handleEmailNow, handleEmailStatus, runEmailDigest } from "./email_digest.js";
+import { handleEmailNow, handleEmailStatus, handleEmailRaw, runEmailDigest } from "./email_digest.js";
 import { getNowTaipei } from "./time.js";
 
 let cronDigestBusy = false; // 單飛：同一 isolate 內避免相鄰 tick 並發跑摘要（重複抓信/重複加待辦）
@@ -67,6 +67,7 @@ export default {
  <b>信箱摘要喵（Email Digest）：</b>
  • <code>/email_now</code> - 立即抓新信並產生 AI 分類摘要：發現「待辦型」(繳作業/繳費/回表單等) 會<b>自動加入待辦</b>；報名型活動只做摘要喵
  • <code>/email_status</code> - 查看信箱連線設定、摘要模型與上次摘要時間
+ • <code>/email_raw</code> - 診斷：看 AI 實際收到的信件內容喵
  • 每天早上 9 點 (台北時間) 自動推送一次摘要喵
  • 設定方式 1（最簡單）：在 Cloudflare 設定 secrets
    - <code>POP3_HOST</code> = msa.ntu.edu.tw
@@ -93,6 +94,11 @@ export default {
 
     bot.command("email_status", async (ctx) => {
       await handleEmailStatus(ctx, env);
+    });
+
+    // 診斷：看 AI 實際收到的信件內容
+    bot.command("email_raw", async (ctx) => {
+      await handleEmailRaw(ctx, env);
     });
 
     // --- 1. 訊息接收與分流 ---

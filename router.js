@@ -1026,7 +1026,12 @@ async function handleCallbackQuery(ctx, env) {
     });
     kb.text("❌ 關閉", "cancel").text("🗑️ 刪除選取", `conf_del_f|${start || 0}|${end || 0}`).text("✅ 標完成", `conf_done_f|${start || 0}|${end || 0}`).row();
 
-    await ctx.editMessageText("🗑️ <b>管理喵～</b>\n請勾選要處理的任務：", { parse_mode: "HTML", reply_markup: kb });
+    const manageText = "🗑️ <b>管理喵～</b>\n請勾選要處理的任務：";
+    if (ctx.callbackQuery?.message?.photo) {
+      // 舊版照片訊息上的管理喵：照片不能就地編輯成文字，改發一則新訊息
+      return ctx.reply(manageText, { parse_mode: "HTML", reply_markup: kb });
+    }
+    return ctx.editMessageText(manageText, { parse_mode: "HTML", reply_markup: kb });
   }
 
   // 範圍管理模式的勾選邏輯
@@ -1120,16 +1125,21 @@ async function handleCallbackQuery(ctx, env) {
     return answerCb(odRows.length ? `🧹 已把 ${odRows.length} 筆標完成喵！` : "沒有逾期的了喵");
   }
 
-  // /list 每筆任務「✅ N」：標完成並就地更新清單（換圖+改 caption，不重發新訊息）
+  // /list 每筆任務「✅ N」：標完成並就地更新（文字清單改字 + 上方照片換新圖）
+  // 新版 callback：doneone|id|start|end|label|photoMsgId（label 可能含 |，photoMsgId 恆為最後一段）
+  // 舊版 callback（部署前發出的訊息）：doneone|id|start|end|label
   if (data.startsWith("doneone|")) {
     const parts = data.split("|");
     const tid = parts[1];
     const start = parseInt(parts[2]) || null;
     const end = parseInt(parts[3]) || null;
-    const label = parts[4] || "任務清單";
+    const isNew = parts.length >= 6;
+    const photoMsgId = isNew ? (parseInt(parts[parts.length - 1]) || null) : null;
+    const label = isNew ? (parts.slice(4, -1).join("|") || "任務清單") : (parts[4] || "任務清單");
     await markTodosDone(env, [tid], userId);
     answerCb("✅ 已標完成喵！");
-    await refreshListView(ctx, env, userId, label, start, end);
+    await refreshListView(ctx, env, userId, label, start, end, photoMsgId);
+    return;
   }
 
   // 管理模式 - 主選單（全局）
