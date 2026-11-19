@@ -28,20 +28,31 @@ class TcpLine {
     return out;
   }
   // 多行回應，以 "\r\n.\r\n" 結尾
-  async multi(maxBytes = 260000) {
-    while (this.pending.indexOf("\r\n.\r\n") < 0 && this.pending.length < maxBytes) {
+  // 關鍵：無論內容多大都必須吃到結尾記號為止。舊版撞到 260KB 就放棄並清空 pending，
+  // 結尾記號殘留在 socket 裡 → 後續每條命令全部錯位 → 每封信都解出上一封信的
+  // base64 碎片（「5 封全空白」的根因）。內容過大只截斷回傳，對齊必須保住。
+  // 超過 hardBytes 視為連線中毒（無法合理對齊），throw 由呼叫端中止本輪。
+  async multi(maxBytes = 260000, hardBytes = 5000000) {
+    while (this.pending.indexOf("\r\n.\r\n") < 0) {
       await this.readChunk();
+      if (this.pending.length > hardBytes) {
+        this.poisoned = true;
+        throw new Error("多行回應超過硬上限，連線已中毒");
+      }
     }
-    let out;
     const i = this.pending.indexOf("\r\n.\r\n");
-    if (i >= 0) { out = this.pending.slice(0, i); this.pending = this.pending.slice(i + 5); }
-    else { out = this.pending; this.pending = ""; }
+    let out = this.pending.slice(0, i);
+    this.pending = this.pending.slice(i + 5);
+    if (out.length > maxBytes) out = out.slice(0, maxBytes); // 截斷內容，但結尾已吃掉、stream 仍對齊
     return out;
   }
   async cmdSingle(s) { await this.writer.write(TE.encode(s + "\r\n")); return this.line(); }
   async cmdMulti(s) {
     await this.writer.write(TE.encode(s + "\r\n"));
     const st = await this.line();
+    // POP3 的 -ERR 是「單行」回應（沒有結尾記號），絕不能去讀 body，
+    // 否則會把下一條命令的回應當成這封信的內容 → 整個 session 錯位
+    if (st.startsWith("-ERR")) return { st, body: "" };
     const body = await this.multi();
     return { st, body };
   }
@@ -116,20 +127,33 @@ export async function fetchMail(inbox, opts = {}) {
     // 載入內容（由舊到新的 TOP，回傳前依時間排序、截 maxCount 封最新的）
     const mails = [];
     for (const item of news.slice(-maxCount * 2)) {
-      let raw;
+      if (p.poisoned) { steps.push(["aborted_poisoned", String(item.n)]); break; }
+      let raw = null, st = "";
       try {
         // full=true 時整信抓回（RETR）；否則 TOP 省頻寬
         const r = full ? await p.cmdMulti(`RETR ${item.n}`) : await p.cmdMulti(`TOP ${item.n} ${topLines}`);
-        raw = r.body;
+        st = r.st;
+        if (r.st.startsWith("+OK")) raw = r.body;
+        else if (!full) {
+          // TOP 被拒絕（-ERR 單行回應）→ 退回 RETR
+          const r2 = await p.cmdMulti(`RETR ${item.n}`);
+          st = r2.st;
+          if (r2.st.startsWith("+OK")) raw = r2.body;
+        }
       }
-      catch {
-        // TOP 不支援時退回 RETR（可能抓很多，限筆）
-        try { const r = await p.cmdMulti(`RETR ${item.n}`); raw = r.body; }
-        catch (e) { steps.push(["fetch_fail", `${item.n}: ${String(e).slice(0, 60)}`]); continue; }
+      catch (e) {
+        if (p.poisoned) { steps.push(["poisoned", `${item.n}: ${String(e).slice(0, 60)}`]); break; }
+        steps.push(["fetch_fail", `${item.n}: ${String(e).slice(0, 60)}`]); continue;
+      }
+      if (raw == null) {
+        // 狀態行不是 +OK（-ERR 或非預期回應）→ 跳過這封，不吃 body 也不留髒資料
+        steps.push(["err_resp", `${item.n}: ${String(st).slice(0, 60)}`]);
+        continue;
       }
       try {
         const m = decodeMail(raw, full ? 8000 : 1600);
-        mails.push({ uid: item.uid, n: item.n, ...m });
+        // 診斷用：raw 長度與前 120 字元（/email_raw 顯示，判斷「解不出」是 raw 空還是解析壞）
+        mails.push({ uid: item.uid, n: item.n, rawLen: raw.length, rawHead: raw.slice(0, 120), ...m });
       } catch (e) { steps.push(["decode_fail", `${item.n}: ${String(e).slice(0, 60)}`]); }
     }
     try { p.close(); } catch {}
@@ -171,7 +195,8 @@ export function decodeMail(raw, textCap = 1600) {
   const dateStr = headers.date || "";
   let ts = 0;
   try { const d = new Date(dateStr); if (!isNaN(d.getTime())) ts = Math.floor(d.getTime() / 1000); } catch {}
-  if (!ts) ts = Math.floor(Date.now() / 1000);
+  // 沒有 Date 時保持 0（排最前）。舊版 fallback 成 now 會讓「解不出 header 的垃圾」
+  // 被排成最新信，霸佔顯示範圍。
 
   // 對純文字內容做深度去噪：重複空行、腳註；textCap 控制保留長度（摘要用全文時給大值）
   const cleaned = cleanSnippet(text, textCap);

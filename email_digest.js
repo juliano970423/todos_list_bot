@@ -545,8 +545,12 @@ export async function handleEmailRaw(ctx, env) {
       const body = String(m.text || "").slice(0, 900);
       const total = String(m.text || "").length;
       const emptyMark = m.bodyEmpty ? " ⚠️<b>信件本體解不出文字</b>（以下僅主旨）" : "";
+      // 診斷：rawLen=0 → 伺服器回空；rawLen 大但 header 全空 → 解析/錯位問題
+      const diag = `🆔 #${m.n} ・ raw ${m.rawLen ?? "?"} 字節` +
+        (m.rawHead ? `\n<code>${esc(String(m.rawHead).replace(/\s+/g, " ").slice(0, 120))}</code>` : "");
       const msg = `📥 <b>信件 ${i + 1}/${res.mails.length}</b>（AI 實際輸入，去噪後 ${total} 字）${emptyMark}\n` +
         `主旨：${esc(cleanSubject(m.subject)) || "(無主旨)"}\n寄件：${esc(m.from)}\n時間：${esc(m.date || "")}\n` +
+        `${diag}\n` +
         `─────────────\n<code>${esc(body) || "(空的！這就是摘要抓不到資訊的原因)"}</code>`;
       try {
         await ctx.reply(msg, { parse_mode: "HTML" });
