@@ -158,7 +158,11 @@ export function decodeMail(raw, textCap = 1600) {
   const cte = (headers["content-transfer-encoding"] || "").trim().toLowerCase();
   const meta = { ...parseCtype(ctype), cte };
 
-  let text = extractPart(body, meta) || (headers.subject || "");
+  const extracted = extractPart(body, meta);
+  // bodyEmpty：信件本體解不出任何文字（純圖片/附件信或解碼失敗）。
+  // text 仍退回主旨，讓 AI 至少看得到主旨；但摘要層靠 bodyEmpty 把這類信合併處理。
+  const bodyEmpty = !String(extracted || "").replace(/\s+/g, "");
+  let text = extracted || (headers.subject || "");
 
   // 標題、寄件者正規化
   const subject = decodeHeader(headers.subject || "");
@@ -171,7 +175,7 @@ export function decodeMail(raw, textCap = 1600) {
 
   // 對純文字內容做深度去噪：重複空行、腳註；textCap 控制保留長度（摘要用全文時給大值）
   const cleaned = cleanSnippet(text, textCap);
-  return { subject, from, to, date: dateStr, ts, text: cleaned };
+  return { subject, from, to, date: dateStr, ts, text: cleaned, bodyEmpty };
 }
 
 function findHeaderEnd(raw) {
@@ -246,35 +250,55 @@ function cleanFrom(s) {
   return out.slice(0, 120);
 }
 
-// 淺層 multipart 處理：優取 text/plain，退而取 text/html
-function extractPart(body, meta) {
+// multipart 展開：收集所有 leaf 文字 part（支援巢狀 multipart，深度上限 3）
+// 舊版兩個致命缺陷（造成「空白郵件」+「期限未見於文字內容」）：
+//  1. 比對 pm.type === "text/plain" —— parseCtype 回傳 type="text"、sub 才是 "plain"，
+//     永遠不命中 → multipart 信一律解出空字串（NTU COOL 全是 multipart/alternative）
+//  2. 只認 \r\n\r\n 分隔 —— LF-only 行尾的信每個 section 都切不出 header/body
+function collectLeafParts(body, meta, depth, out) {
+  if (depth > 3) return;
   if (meta.type === "multipart" && meta.params.boundary) {
     const b = `--${meta.params.boundary}`;
     const secs = body.split(b);
-    let plain = null, html = null;
     for (const sec of secs.slice(1)) {
       if (/^\s*--/.test(sec)) break; // 結束 boundary
-      const hdEnd = sec.search(/\r\n\r\n/);
-      if (hdEnd < 0) continue;
-      const head = sec.slice(0, hdEnd);
-      const rest = sec.slice(hdEnd + 4);
+      const m = /\r?\n\r?\n/.exec(sec);
+      if (!m) continue;
+      const head = sec.slice(0, m.index);
+      const rest = sec.slice(m.index + m[0].length);
       const hdrs = parseHeaders(head + "\n");
       const pm = parseCtype(hdrs["content-type"] || "text/plain");
       const cte = hdrs["content-transfer-encoding"] || "";
-      if (pm.type === "text/plain") { plain = { raw: rest, cte, charset: pm.params.charset }; }
-      else if (pm.type === "text/html" && !html) { html = { raw: rest, cte, charset: pm.params.charset }; }
-      if (plain) break;
+      if (pm.type === "multipart") {
+        collectLeafParts(rest, pm, depth + 1, out); // 巢狀（mixed > alternative）
+      } else if (pm.type === "text") {
+        out.push({ sub: pm.sub || "plain", raw: rest, cte, charset: pm.params.charset });
+      }
+      // 非文字 part（附件、image/*、message/rfc822）一律跳過
     }
-    const pick = plain || html;
-    if (!pick) return "";
-    let text = decodeByCte(pick.raw, pick.cte, pick.charset);
-    if (pick === html) text = htmlToText(text);
-    return text;
+    return;
   }
   // 非 multipart：最外層即內容
-  let text = decodeByCte(body, meta.cte, meta.params.charset);
-  if (meta.type === "text/html" || (meta.type !== "text" && /</.test(text.slice(0, 200)))) text = htmlToText(text);
-  return text;
+  out.push({ sub: meta.sub || "plain", raw: body, cte: meta.cte, charset: meta.params.charset });
+}
+
+function extractPart(body, meta) {
+  const parts = [];
+  collectLeafParts(body, meta, 0, parts);
+  const effLen = (t) => String(t || "").replace(/\s+/g, "").length;
+
+  let bestPlain = "", bestHtml = "";
+  for (const p of parts) {
+    let t = decodeByCte(p.raw, p.cte, p.charset);
+    if (p.sub === "html") t = htmlToText(t);
+    if (p.sub === "html") { if (effLen(t) > effLen(bestHtml)) bestHtml = t; }
+    else if (effLen(t) > effLen(bestPlain)) bestPlain = t;
+  }
+  // plain 有實質內容（≥20 非空白字）→ 用 plain（乾淨）；
+  // plain 是空殼/太短（alternative 裡 plain 常是空的，完整內容在 html）→ 退 html
+  if (effLen(bestPlain) >= 20) return bestPlain;
+  if (effLen(bestHtml) > 0) return bestHtml;
+  return bestPlain || bestHtml || "";
 }
 
 function decodeByCte(raw, cte, charset) {
