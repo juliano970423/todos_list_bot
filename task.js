@@ -694,6 +694,14 @@ async function sendBatchConfirmation(ctx, items, opts = {}) {
   await ctx.reply(msg, { parse_mode: "HTML", reply_markup: kb });
 }
 
+// 提醒訊息的鍵盤：單次 ✅/還沒（rdone/rsnooze）；循環 ✅ 只回執（rdone2，不動排程狀態）
+// 抽成獨立函式供單元測試——舊版循環任務直接 undefined，提醒訊息完全沒按鈕
+export function buildRemindKeyboard(todo) {
+  const kb = new InlineKeyboard().text("✅ 做完了", `rdone${todo.cron_rule ? "2" : ""}|${todo.id}`);
+  if (!todo.cron_rule) kb.text("還沒", `rsnooze|${todo.id}`);
+  return kb;
+}
+
 // 處理定時任務提醒
 async function processScheduledReminders(bot, env) {
   const nowTs = Math.floor(Date.now() / 1000);
@@ -729,10 +737,9 @@ async function processScheduledReminders(bot, env) {
       if (todo.all_day && nowTaipei.getUTCHours() < 9) continue;
 
       const isSingle = !todo.cron_rule;
-      // 單次任務附「做完了嗎」按鈕：✅ 標完成進歷史／還沒 = 侀眠到明天同一時刻
-      const remindKb = isSingle
-        ? new InlineKeyboard().text("✅ 做完了", `rdone|${todo.id}`).text("還沒", `rsnooze|${todo.id}`)
-        : undefined;
+      // 提醒附「做完了」按鈕：單次 = ✅ 標完成進歷史／還沒 = 侀眠到明天同一時刻；
+      // 循環 = ✅ 只回執（歷史在發送時已寫入，狀態不動，下次照排程提醒）
+      const remindKb = buildRemindKeyboard(todo);
 
       try {
         await sendBotMessageHtml(bot.api, todo.user_id, `🔔 <b>提醒時間到！</b>\n👉 ${escapeHtml(todo.task)}`, remindKb ? { reply_markup: remindKb } : {});

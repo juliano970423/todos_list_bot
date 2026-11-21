@@ -1106,6 +1106,13 @@ async function handleCallbackQuery(ctx, env) {
     return answerCb("✅ 已標完成喵！");
   }
 
+  // 循環任務提醒「✅ 做完了」：本次歷史在發送時已寫入，這裡只回執 + 移除按鈕。
+  // 不能走 rdone/markTodosDone——那會把 status 打成 1，循環排程直接被殺掉
+  if (data.startsWith("rdone2|")) {
+    await ctx.editMessageReplyMarkup().catch(() => {});
+    return answerCb("✅ 已記錄喵（下次照排程提醒）");
+  }
+
   // 提醒訊息「還沒」：侀眠，明天同一時刻再提醒（全日任務落明天 00:00 -> 9 點後照樣靜音規則）
   if (data.startsWith("rsnooze|")) {
     const tid = data.split("|")[1];

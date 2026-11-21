@@ -220,24 +220,33 @@ export async function buildDigestItems(env, mails, aiDigest, redactor, nowTs) {
 
 // ============== 訊息渲染 ==============
 
+// 分類權重：有期限的條目之間，作業/考試 永遠排在 行政/系統 前面（使用者指定）
+const CATEGORY_ORDER = { "作業/考試": 0, "課程": 1, "財務/繳費": 2, "社團/活動": 3, "行政/系統": 4, "其他": 5 };
+const catRank = (c) => (CATEGORY_ORDER[c] !== undefined ? CATEGORY_ORDER[c] : 5);
+
 export function renderDigestMessage(mailboxName, todayStr, items) {
-  // 有期限的（已加入待辦或僅摘要但有期限）排前面，依時間先後；無期限的放後面
+  // 排序：有期限的排前面（無期限墊後）→ 同為有期限時依分類權重（作業/考試優先）
+  // → 同分類內依期限時間 → 最後照原順序。分組標題跟著第一個條目出現，組間順序因此固定。
   const deadlineTs = (it) => (it.valid && it.remindAt > 0 ? it.remindAt : (it.deadlineTs > 0 ? it.deadlineTs : 0));
   const sorted = items.map((it, idx) => ({ it, idx })).sort((a, b) => {
     const da = deadlineTs(a.it), db = deadlineTs(b.it);
-    if (da > 0 && db > 0) return da - db || a.idx - b.idx;
-    if (da > 0) return -1;
-    if (db > 0) return 1;
+    const ha = da > 0 ? 0 : 1, hb = db > 0 ? 0 : 1; // 有期限在前、無期限墊後
+    if (ha !== hb) return ha - hb;
+    const ra = catRank(a.it.category), rb = catRank(b.it.category);
+    if (ra !== rb) return ra - rb;
+    if (da > 0 && db > 0 && da !== db) return da - db;
     return a.idx - b.idx;
   }).map((x) => x.it);
   const catTotal = new Map();
   for (const it of sorted) catTotal.set(it.category, (catTotal.get(it.category) || 0) + 1);
-  const catSeen = new Set();
   let msg = `📬 <b>${esc(mailboxName)} ・ Email 摘要</b>\n🗓 ${esc(todayStr)} ・ ${items.length} 封\n`;
   let n = 0;
+  let lastCat = null;
   for (const it of sorted) {
-    if (!catSeen.has(it.category)) {
-      catSeen.add(it.category);
+    // 分類「首次出現」或「中斷後再現」都要開標題：同分類的有期限/無期限條目
+    // 會被排進不同區塊，不重開標題會黏到別組下面
+    if (it.category !== lastCat) {
+      lastCat = it.category;
       const emoji = CATEGORY_EMOJI[it.category] || "📌";
       msg += `\n${emoji} <b>${esc(it.category)} (${catTotal.get(it.category)})</b>\n`;
     }
